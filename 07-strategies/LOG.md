@@ -107,6 +107,124 @@ All scored runs are recorded in [results/scores.tsv](results/scores.tsv). Length
 
 ---
 
-## Round 2 (in progress)
+## Round 2 (2-ply lookahead limit, AST-node length metric, whole-class union proofs, `audit-rank`)
 
-*(Entries will be appended after each step and experiment.)*
+Whole-class reference totals for White-to-move valid positions:
+- **KQK**: 4x4 = **812**, 5x5 = **4,976**, 6x6 = **19,360**.
+- **KRK**: 4x4 = **1,312**, 5x5 = **7,040**, 6x6 = **25,440**.
+
+### Family: `kqk` (Round 2 refinement)
+
+- **`strategies/kqk_v5.py`** — 754 nodes / 1,664 B *(compliant 2-ply)*
+  - *Whole-class score*: 4x4 = **804/812** (8 uncovered, max rank 5), 5x5 = **4,964/4,976** (12 uncovered, max rank 8), 6x6 = **19,280/19,360** (80 uncovered, max rank 12). On 5x5 covered positions, `audit-rank` is strict (7,588/7,588 decrease).
+  - *Why it missed a few whole-class positions*: On rare positions where the Black king stands between `K` and the mating square `(tf, tr)` (or symmetric `bw == bh` ties), `kqk_v5` entered short oscillations because `K` aimed at the corner mating square rather than `Q`'s square and did not break `bw == bh` symmetry deterministically.
+
+- **`strategies/kqk_v6.py`** — 762 nodes / 1,686 B *(compliant 2-ply)*
+  - *Idea*: When `bw > 1` and `bh > 1`, target `Q`'s square `(qf, qr)` instead of the corner so `k` cannot block `K`; break `bw` vs `bh` symmetry deterministically via `(area, min(bw, bh), bh, kd_c, kd_m, cf + cr)`.
+  - *Whole-class score*: 4x4 = **812/812** (100%, max rank 7), 5x5 = **4,976/4,976** (100%, max rank 10).
+  - *Why v7 was still needed*: Distance-1 ties around `Q` could still stall `audit-rank` monotonicity when `K` stepped around `Q` without moving onto `k`'s side along the shorter axis.
+
+- **`strategies/kqk_v7.py`** — 793 nodes / 1,747 B *(compliant 2-ply)*
+  - *Idea*: Add `k_ax` (distance from `K` to `k`'s edge along the shorter box axis) to break distance-1 ties around `Q`: `(0, k_edge, trap, area, min(bw, bh), bh, kd_c, kd_m, k_ax, cf + cr)`.
+  - *Score*: **1000/1000** on `kqk` family (19,571 entries, max rank 17, 11.20 entries/B, 24.68 entries/node). Whole-class: **812/812** on 4x4 (max rank 6), **4,976/4,976** on 5x5 (max rank 10), **19,360/19,360** on 6x6 (max rank 13), all `VALID` (both checkers on 4x4/5x5; `mcheck2` on 6x6).
+  - *`audit-rank`*: **Strict ranking on all three boards** — 4x4: 940/940 decrease; 5x5: 7,748/7,748 decrease; 6x6: 35,184/35,184 decrease (0 equal, 0 increase).
+
+---
+
+### Family: `krk` (Round 2: versions 4–21)
+
+- **`strategies/krk_v4.py`** — 1,388 nodes / 3,120 B *(compliant 2-ply)*
+  - *Idea*: 2-ply minimax over 1D-strip potential plus an explicit knight's-opposition rook waiting-move override.
+  - *Score*: **295/1000** on `krk` (3,713 entries, max rank 18).
+  - *Why it failed*: The hard-coded waiting-move override conflicted with the minimax potential (sometimes playing a waiting move into a worse strip or hanging the rook), causing cycles whenever `k` stepped sideways instead of retreating.
+
+- **`strategies/krk_v5.py`** — 2,171 nodes / 4,918 B *(non-compliant legacy: ply-2 `_m1(rp)`)*
+  - *Idea*: Procedural textbook 1D-strip cut + opposition push + rook waiting move + far-cut slide.
+  - *Score*: **693/1000** on `krk` under `--allow-legacy-lookahead` (139,863 entries, max rank 36).
+  - *Why it failed*: Violated the round-2 2-ply rule and still cycled on ~31% of roots in corner/king-behind-rook/cut-axis transition edge cases.
+
+- **`strategies/krk_v6.py`** — 1,071 nodes / 2,338 B *(non-compliant legacy: ply-2 `_m1(rp)`)*
+  - *Idea*: 2-ply minimax over `Box-Shrink + King-Defends-Rook` potential plus corner mate-in-2 check.
+  - *Score*: **448/1000** on `krk` under `--allow-legacy-lookahead` (8,254 entries, max rank 12).
+  - *Why it failed*: Violated the 2-ply rule and still lacked a clean mechanism to break knight's opposition without oscillating.
+
+- **`strategies/krk_v7.py`** — 651 nodes / 1,496 B *(compliant 2-ply)*
+  - *Idea*: Pure 2-ply minimax over a 1D-rank-herding tuple `(0, r_hang, bh, br_d, r_gap, k_side, k_rank, in_opp, herd, k_file, r_far)`.
+  - *Whole-class score*: 4x4 = **590/1,312** (45.0%, max rank 7), 5x5 = **1,388/7,040** (19.7%, max rank 9).
+  - *Why it failed*: Placing `r_hang` ahead of `bh` and including `br_d` / `r_gap` let Black's king attack the rook or bounce back and forth along the cut rank without allowing a tempo-gaining rook slide.
+
+- **`strategies/krk_v8.py`** — 926 nodes / 1,928 B *(compliant 2-ply)*
+  - *Idea*: Switch to a 2D-box + King-phalanx potential `(0, r_hang, k_edge, area, min(bw, bh), bh, kd_c, kd_m, k_ax, cf + cr)` modeled directly on `kqk_v7` (dropping Black-king distance terms).
+  - *Whole-class score*: 4x4 = **368/1,312** (28.0%), 5x5 = **1,316/7,040** (18.7%), 6x6 = **1,850/25,440** (7.3%).
+  - *Why it failed*: Unlike a Queen, a Rook cannot cut diagonally or deliver solo box shrinks; once `k` reached the edge (`min(bw, bh) == 1`), the 2D potential had no opposition/edge-squeeze mechanism to force mate.
+
+- **`strategies/krk_v9.py`** — 1,153 nodes / 2,607 B *(compliant 2-ply)*
+  - *Idea*: Split the 2D-box potential into Phase 1 (`m_dim >= 2`) and Phase 2 (`m_dim == 1`, edge-rank King arrival + corner mate-in-2 bonus `in_mate_k`).
+  - *Whole-class score*: 4x4 = **444/1,312** (33.8%), 5x5 = **1,788/7,040** (25.4%), 6x6 = **2,508/25,440** (9.9%).
+  - *Why it failed*: Still got stuck in Phase 1 box-shrink cycles (Black harassed the rook along the box boundary) and Phase 2 edge-squeeze ties.
+
+- **`strategies/krk_v10.py`** — 1,247 nodes / 2,693 B *(compliant 2-ply)*
+  - *Idea*: Add an explicit Phase 3 King+Rook 2x1 corner mating cage (when `bw == 2` on edge rank or `bh == 2` on edge file) and tighten Phase 2 edge squeeze with tie-breakers (`abs(bf - cf)` / `abs(br - cr)`).
+  - *Whole-class score*: 4x4 = **1,312/1,312** (**100%**, max rank 10), 5x5 = **6,880/7,040** (97.7%, max rank 15), 6x6 = **12,708/25,440** (50.0%, max rank 14).
+  - *Why it failed on 5x5/6x6*: On larger boards, Phase 1 (`area` + King-phalanx) cycled when Black attacked the rook during box transitions, and switching between horizontal and vertical cut axes created axis-flipping cycles.
+
+- **`strategies/krk_v11.py`** — 1,271 nodes / 2,733 B *(compliant 2-ply)*
+  - *Idea*: Reorder Phase 1/2 to prioritize `area` before `r_hang` (so White accepts temporary rook threats if a shrink is forced) and add `bk_c` tie-break.
+  - *Whole-class score*: 4x4 = **1,312/1,312** (100%, max rank 9), 5x5 = **5,496/7,040** (78.1%), 6x6 = **10,284/25,440** (40.4%).
+  - *Why it failed*: Regression vs v10: deprioritizing `r_hang` caused White to step into rook-harassment loops where `k` chased `R` back and forth across a shrink line.
+
+- **`strategies/krk_v12.py`** — 1,199 nodes / 2,617 B *(compliant 2-ply)*
+  - *Idea*: Restore `r_hang` in Phase 2, refine King-defense of the exact shrink square in Phase 1, and drop `bk_c`.
+  - *Whole-class score*: 4x4 = **1,312/1,312** (100%, max rank 10), 5x5 = **6,820/7,040** (96.9%), 6x6 = **18,588/25,440** (73.1%, max rank 18).
+  - *Why it failed*: Major gain on 6x6 (+5,880 positions over v10), but 2D box axis flips between `bw` and `bh` still produced cycles in the middle of the 6x6 board.
+
+- **`strategies/krk_v13.py`** — 1,194 nodes / 2,673 B *(compliant 2-ply)*
+  - *Idea*: In Phase 1, prioritize `m_dim` -> `axis` -> `k_line_d` -> `r_hang` -> `area` to commit to shrinking the shorter dimension first.
+  - *Whole-class score*: 4x4 = **1,312/1,312** (100%, max rank 9), 5x5 = **6,180/7,040** (87.8%), 6x6 = **13,744/25,440** (54.0%).
+  - *Why it failed*: Regression vs v12: locking `axis` inside a 2D box still allowed `k` to jump across `R`'s file/rank and invert `m_dim` / `axis`.
+
+- **`strategies/krk_v14.py`** — 1,092 nodes / 2,457 B *(compliant 2-ply)*
+  - *Idea*: Unify Phase 1 and Phase 2 so `K` always targets `rr + dr` (behind `R`'s cut line), merging the two phases into one tuple.
+  - *Whole-class score*: 4x4 = **1,224/1,312** (93.3%), 5x5 = **5,608/7,040** (79.7%), 6x6 = **11,976/25,440** (47.1%).
+  - *Why it failed*: Unifying within a 2D box still allowed horizontal/vertical axis flips, and lost 4x4 completeness because `k_in_box` occasionally blocked a 1-rank shrink.
+
+- **`strategies/krk_v15.py`** — 794 nodes / 1,885 B *(compliant 2-ply)*
+  - *Idea*: **Major architectural pivot** — abandon 2D boxes completely and return to a pure **1D vertical strip** (`eff_bh` with corner-cage reduction, `push_ready` for opposition check-shrink, and fixed left-herding `bf -> 0` with `K` at `tf = min(w-2, bf+1)`). Never flip to horizontal cuts, eliminating all axis-flipping cycles.
+  - *Whole-class score*: 4x4 = **890/1,312** (67.8%), 5x5 = **3,186/7,040** (45.3%), 6x6 = **7,640/25,440** (30.0%).
+  - *Why it failed*: Three specific bugs: (1) `K` walking behind `R` could block `R` from sliding past `K`; (2) `push_ready` didn't recognize when `k` already retreated (`br_d < eff_bh - 1`); (3) `br_d` in the tuple blocked waiting moves.
+
+- **`strategies/krk_v16.py`** — 830 nodes / 1,981 B *(compliant 2-ply)*
+  - *Idea*: Add `k_blocks_r` penalty (when `K` lies horizontally between `R` and `k` on the wrong side) and place `r_far` before `bf`.
+  - *Whole-class score*: 4x4 = **772/1,312** (58.8%), 5x5 = **2,544/7,040** (36.1%), 6x6 = **7,448/25,440** (29.3%).
+  - *Why it failed*: Putting `r_far` ahead of `bf` prevented White from herding `k` left when `R` was close, and `push_ready` still missed free retreats.
+
+- **`strategies/krk_v17.py`** — 852 nodes / 2,097 B *(compliant 2-ply)*
+  - *Idea*: Extend `push_ready` to fire whenever `r_far == 0` AND `eff_bh < h and br_d < eff_bh - 1` (i.e. `k` stepped away from the cut rank so `R` can immediately tighten the strip next move), and move `r_far` back behind `k_file_d`.
+  - *Whole-class score*: 4x4 = **1,312/1,312** (**100%**, max rank 18), 5x5 = **6,726/7,040** (95.5%, max rank 22), 6x6 = **16,766/25,440** (65.9%, max rank 28).
+  - *Why it failed on 5x5/6x6*: Huge jump (+4,182 on 5x5, +9,318 on 6x6), but keeping `br_d` in the tuple still prevented necessary Rook waiting moves along the cut rank.
+
+- **`strategies/krk_v18.py`** — 849 nodes / 2,087 B *(compliant 2-ply)*
+  - *Idea*: Remove the redundant `br_d` term from the tuple so `R` can freely make tempo/waiting moves without fearing `k` stepping closer to the cut rank.
+  - *Whole-class score*: 4x4 = **1,312/1,312** (100%, max rank 18), 5x5 = **6,904/7,040** (98.1%, max rank 24), 6x6 = **17,334/25,440** (68.1%, max rank 29).
+  - *Why it failed on 5x5/6x6*: With `r_hang` ahead of `bf`, Black could chase `R` back and forth along the cut rank and undo left-herding progress.
+
+- **`strategies/krk_v19.py`** — 849 nodes / 2,087 B *(compliant 2-ply)*
+  - *Idea*: Move `bf` and `k_file_d` ahead of `r_hang` so White prioritizes herding `k` left even when `k` threatens `R` (since 2-ply minimax already sees `R` capture as penalty `99`).
+  - *Whole-class score*: 4x4 = **1,290/1,312** (98.3%), 5x5 = **6,693/7,040** (95.1%), 6x6 = **24,546/25,440** (**96.5%**, max rank 43).
+  - *Why it failed*: Massive jump on 6x6 (+7,212 positions!), but herding `bf` while `K` was still approaching the opposition rank `tr` let `k` chase `R` before `K` arrived.
+
+- **`strategies/krk_v20.py`** — 881 nodes / 2,209 B *(compliant 2-ply)*
+  - *Idea*: Split the return tuple on `k_side == 0 and k_rank_d == 0`: only herd `bf` once `K` has reached the opposition rank `tr`; while `K` is approaching `tr`, keep `R` safe and far (`r_hang, r_far, r_dist_pen`) so `k` cannot harass `R`. For `eff_bh >= h - 1`, set `tr = br - dr`.
+  - *Whole-class score*: 4x4 = **1,308/1,312** (99.7%, only 4 uncovered), 5x5 = **7,040/7,040** (**100%**, max rank 28), 6x6 = **25,392/25,440** (99.8%, only 48 uncovered).
+  - *Why it missed the last 4 on 4x4 and 48 on 6x6*: Two tiny edge cases: (1) `k_blocks_r` fired even when `K` was far from `R`'s rank, interfering with `K`'s approach; (2) `tr = br - dr` when `eff_bh >= h - 1` moved with `k`, causing a rare oscillation on `eff_bh >= h - 1` positions.
+
+- **`strategies/krk_v21.py`** — 892 nodes / 2,230 B *(compliant 2-ply)*
+  - *Idea*: Restrict `k_blocks_r` to `abs(kr - rr) <= 1` (put `r_hang` before `k_blocks_r`), and use a constant center target `tr = h // 2` when `eff_bh >= h - 1` so `k` cannot shift `K`'s target rank.
+  - *Score*: **1000/1000** on `krk` family (433,400 entries, max rank 68, 194.35 entries/B, 485.87 entries/node). Whole-class: **1,312/1,312** on 4x4 (max rank 17), **7,040/7,040** on 5x5 (max rank 26), **25,440/25,440** on 6x6 (max rank 43), all `VALID` (both checkers on 4x4/5x5; `mcheck2` on 6x6).
+  - *`audit-rank`*: **Not a strict ranking** — 4x4: 2,150 dec / 21 eq / 135 inc (2,306 steps); 5x5: 17,852 dec / 48 eq / 534 inc (18,434 steps); 6x6: 78,406 dec / 82 eq / 1,624 inc (80,112 steps). The program still closes globally without cycles because non-decreasing steps enter configurations (such as rook fleeing or tempo waiting) that strictly decrease 1–2 moves later, but `_pot` itself is not yet a Lyapunov certificate.
+
+---
+
+## Round 3 (LIA potential, witness rule, and Z3 proof)
+
+*(Entries will be appended after each step.)*

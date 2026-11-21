@@ -252,6 +252,151 @@ Reproducing command:
 
 Note: `sqrt`/`damped`/`max` damped disjoint sibling sums at AND nodes and failed to prove `1. d3 b3` within 15 s, whereas `snda` preserves exact sums on disjoint trees while eliminating exponential DAG overcounting on transpositions.
 
-### 3. `mini4x5` Sub-Position Decomposition (In Progress)
+### 3. Certified Game Value of `mini4x5`: **DRAW**
 
-*(Updating as sub-positions are proved and merged.)*
+**`mini4x5` (`rqkr/pppp/4/PPPP/RQKR w - -`) is rigorously proven to be a `DRAW` under `SPEC v1.2`** (idealised game without 50/75-move rule). Both lower-bound certificates are accepted as **`VALID`** by both independent checkers (`../03-checker/mcheck.py` and `../08-checker2/mcheck2`):
+
+| Certificate | Claim | Entries (raw -> pruned -> min) | File Bytes | `mcheck.py` Verdict (s) | `mcheck2` Verdict (s) |
+|---|---|---:|---:|---|---|
+| [`certs/mini4x5_draw_w.cert`](certs/mini4x5_draw_w.cert) | `ATLEAST_DRAW w` | `6,211 -> 6,211 -> 6,107` | 203,789 | **VALID** (0.5013 s) | **VALID** (0.0230 s) |
+| [`certs/mini4x5_draw_b.cert`](certs/mini4x5_draw_b.cert) | `ATLEAST_DRAW b` | `262,383 -> 253,446 -> 249,051` | 7,674,522 | **VALID** (24.0171 s) | **VALID** (0.8012 s) |
+
+#### Decomposition and Merge of `ATLEAST_DRAW b`
+
+White has 4 legal first moves from `mini4x5`. Each branch was proved separately as `ATLEAST_DRAW b` (via `df-pn` `snda` + 4-piece tablebases) and combined into one flat SPEC v1.2 certificate using `msolve merge`:
+
+| Branch / Sub-root | Black Defense | Nodes | `tb_hits` | Solver (s) | Entries (raw -> min) | File Bytes | `mcheck2` |
+|---|---|---:|---:|---:|---:|---:|---|
+| `1. a2a3` (`rqkr/pppp/P3/1PPP/RQKR b - -`) | `1... d4d3` | 7,940,906 | 74,521 | 27.03 | `117,771 -> 107,182` | 3,203,031 | **VALID** (0.3512 s) |
+| `1. b2b3` (`rqkr/pppp/1P2/P1PP/RQKR b - -`) | `1... d4d3` | 3,561,307 | 13,764 | 13.25 | `99,073 -> 72,530` | 2,155,711 | **VALID** (0.2281 s) |
+| `1. c2c3` (`rqkr/pppp/2P1/PP1P/RQKR b - -`) | `1... d4d3` | 906,228 | 423 | 2.62 | `21,391 -> 9,524` | 278,567 | **VALID** (0.0287 s) |
+| `1. d2d3 c4c3` (`rqkr/pp1p/2pP/PPP1/RQKR w - -`) | `2. Rd2 a4a3 3. b2b3 a5a4` | 55,946,952 | 284,654 | 89.21 | `253,899 -> 191,951` | 5,827,092 | **VALID** (0.5864 s) |
+| **Merged `mini4x5` (`ATLEAST_DRAW b`)** | + connecting `1... c4c3` | **68,355,393 total** | **373,362** | **132.11 + 9.35 merge** | **`262,383 -> 253,446 -> 249,051`** | **7,674,522** | **VALID** (0.8012 s) |
+
+Key structural findings on `mini4x5`:
+- Against `1. a2a3`, `1. b2b3`, and `1. c2c3`, Black holds immediately with `1... d4d3`.
+- Against White's critical try `1. d2d3`, Black defends with `1... c4c3`:
+  - `2. b2c3 b4c3`, `2. a2a3 b4a3`, and `2. b2b3 a4a3` fail to force a win.
+  - Against `2. d1d2`, Black plays `2... a4a3`; after `3. b2b3` (reaching the Round 1 bottleneck `rqkr/1p1p/pPpP/P1PR/RQK1 b - -`), Black holds with **`3... a5a4` (`Ra4!`)** (meeting `4. b3a4` with `4... b5a4` / `Qxa4!`, which independently disproved `WIN w` in 20.72 s / 9.17M nodes).
+- Merging the four sub-certificates collapsed 118,805 overlapping positions (`381,188 -> 262,383` raw union), and reachability pruning + local minimisation reduced it further to `249,051` entries.
+- Combined proof footprint (`6,107 + 249,051 = 255,158` entries across both sides) is orders of magnitude smaller than the `4x5` reachable state space (`>1.62e8` at depth 10).
+
+#### Exact Reproducing Commands
+
+```sh
+cd /home/dege/chess/05-solver
+make -j4 all
+mkdir -p certs/draw_b
+
+# 1. Prove the 4 ATLEAST_DRAW b branches (auto-loads ../04-tablebase/data 4x5 tables, dag=snda)
+./msolve "rqkr/pppp/P3/1PPP/RQKR b - -" --claim "ATLEAST_DRAW b" --out certs/draw_b/a3.cert --max-seconds 60 --tt-mb 1024
+./msolve "rqkr/pppp/1P2/P1PP/RQKR b - -" --claim "ATLEAST_DRAW b" --out certs/draw_b/b3.cert --max-seconds 45 --tt-mb 1024
+./msolve "rqkr/pppp/2P1/PP1P/RQKR b - -" --claim "ATLEAST_DRAW b" --out certs/draw_b/c3.cert --max-seconds 30 --tt-mb 512
+./msolve "rqkr/pp1p/2pP/PPP1/RQKR w - -" --claim "ATLEAST_DRAW b" --out certs/draw_b/d3_c3.cert --max-nodes 120000000 --max-seconds 180 --tt-mb 2048
+
+# 2. Merge into one flat SPEC v1.2 certificate for mini4x5
+./msolve merge \
+  --root mini4x5 \
+  --claim "ATLEAST_DRAW b" \
+  --move "rqkr/pppp/3P/PPP1/RQKR b - -=c4c3" \
+  --out certs/mini4x5_draw_b.cert \
+  certs/draw_b/a3.cert certs/draw_b/b3.cert certs/draw_b/c3.cert certs/draw_b/d3_c3.cert
+
+# 3. Independently verify both certificates with both checkers
+python3 ../03-checker/mcheck.py verify certs/mini4x5_draw_w.cert
+../08-checker2/mcheck2 verify certs/mini4x5_draw_w.cert
+python3 ../03-checker/mcheck.py verify certs/mini4x5_draw_b.cert
+../08-checker2/mcheck2 verify certs/mini4x5_draw_b.cert
+```
+
+### 4. Round 2 Build and Test Output
+
+Exact command:
+```sh
+make -j4 test
+```
+
+Actual output (34 C++ unit tests + 34 Python dual-checker integration checks, all passed):
+```text
+./build/test_solver
+[PASS] WIN w on already-checkmated root (0 entries)
+[PASS] Test stalemate position is stalemate
+[PASS] WIN w on prover stalemate is DISPROVED
+[PASS] ATLEAST_DRAW w on prover stalemate is PROVED (0 entries)
+[PASS] K vs K 3x3 ATLEAST_DRAW w PROVED
+[PASS] K vs K 3x3 ATLEAST_DRAW b PROVED
+[PASS] mini4x4 WIN w proved (entries=5, max_rank=4)
+[PASS] mini4x4 ATLEAST_DRAW w PROVED
+[PASS] mini4x4 ATLEAST_DRAW b DISPROVED
+[PASS] 8x8 mate in 2 proved (entries=2, max_rank=2)
+[PASS] 8x8 mate in 3 proved (entries=4, max_rank=3)
+[PASS] 8x8 mate in 4 proved (entries=5, max_rank=4)
+[PASS] 8x8 mate in 5 proved (entries=9, max_rank=5)
+[PASS] mini4x4 raw WIN w extracted
+[PASS] Synthetic unreachable mate-in-1 valid
+[PASS] Bloated certificate with unreachable entry is valid before minimize
+[PASS] Minimiser dropped unreachable entry (6 -> 5 -> 5)
+[PASS] mini4x4 WIN w valid under dag=sum
+[PASS] 8x8 mate4 WIN w valid under dag=sum
+[PASS] mini4x4 WIN w valid under dag=snda
+[PASS] 8x8 mate4 WIN w valid under dag=snda
+[PASS] mini4x4 WIN w valid under dag=sqrt
+[PASS] 8x8 mate4 WIN w valid under dag=sqrt
+[PASS] mini4x4 WIN w valid under dag=damped
+[PASS] 8x8 mate4 WIN w valid under dag=damped
+[PASS] mini4x4 WIN w valid under dag=max
+[PASS] 8x8 mate4 WIN w valid under dag=max
+[PASS] TablebaseProbe loaded all 66 4x5 tables (loaded 66 tables for 4x5 (max_pieces=4, bytes=29888040))
+[PASS] 4x5 4pc TB WIN w solved in 1 node and verified (entries=139)
+[PASS] 4x5 K vs K ATLEAST_DRAW w via TB verified (entries=66)
+[PASS] mini4x4 c2d3 legal
+[PASS] mini4x4 sub-reply d4d3 proved
+[PASS] Certificate::merge combined mini4x4 sub-certs ()
+[PASS] Certificate::merge WIN subs into ATLEAST_DRAW ()
+ALL C++ UNIT TESTS PASSED
+python3 tests/verify_all.py
+[PASS] 8x8_mate2: msolve exit 0 (got 0)
+[PASS] 8x8_mate2: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] 8x8_mate2: max_rank=2 <= 2
+[PASS] 8x8_mate3_br: msolve exit 0 (got 0)
+[PASS] 8x8_mate3_br: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] 8x8_mate3_br: max_rank=3 <= 3
+[PASS] 8x8_mate3_phil: msolve exit 0 (got 0)
+[PASS] 8x8_mate3_phil: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] 8x8_mate3_phil: max_rank=3 <= 3
+[PASS] 8x8_mate4_phil: msolve exit 0 (got 0)
+[PASS] 8x8_mate4_phil: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] 8x8_mate4_phil: max_rank=4 <= 4
+[PASS] 8x8_mate5_phil: msolve exit 0 (got 0)
+[PASS] 8x8_mate5_phil: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] 8x8_mate5_phil: max_rank=5 <= 5
+[PASS] mini4x4_KQ_K: msolve exit 0 (got 0)
+[PASS] mini4x4_KQ_K: both checkers VALID (mcheck1=VALID mcheck2=VALID)
+[PASS] mini4x4 WIN w proved (rc=0)
+[PASS] mini4x4 WIN w both checkers VALID
+[PASS] mini4x4 --value == WIN w
+[PASS] mini4x4 --value cert both checkers VALID
+[PASS] kvk3x3 --value == DRAW
+[PASS] kvk3x3 both ATLEAST_DRAW certs both checkers VALID
+[PASS] kvk4x4 --value == DRAW
+[PASS] kvk4x4 both ATLEAST_DRAW certs both checkers VALID
+[PASS] prover-stalemate ATLEAST_DRAW w exit 0
+[PASS] prover-stalemate ATLEAST_DRAW w both checkers VALID (0 entries)
+[PASS] stalemate_b ATLEAST_DRAW b exit 0
+[PASS] stalemate_b ATLEAST_DRAW b both checkers VALID
+[PASS] 4x5 5pc TB-assisted WIN w solved
+[PASS] 4x5 5pc TB-spliced cert both checkers VALID
+[PASS] merge sub phil_kh8 proved
+[PASS] merge sub phil_kf8 proved
+[PASS] msolve merge phil exit 0 (got 0: )
+[PASS] msolve merge phil cert both checkers VALID
+ALL PYTHON + DUAL-CHECKER INTEGRATION TESTS PASSED
+```
+
+### 5. Round 2 Known Gaps, Open Questions, and Spec Issues
+
+- **Asymmetry in `mini4x5` draw certificate sizes (`6,107` vs `249,051` entries):** `ATLEAST_DRAW w` only needs one defending White first move (`1. d2d3`), whereas `ATLEAST_DRAW b` must cover all 4 White first moves (`a3`, `b3`, `c3`, `d3`) and includes tablebase-spliced 4-piece draw subgraphs. Stronger post-hoc closed-set minimisation (e.g., global hitting-set / SCC contraction or preferring smaller draw cycles during extraction) could likely shrink `mini4x5_draw_b.cert` substantially.
+- **TB-spliced `WIN` certificates can be slightly larger than non-TB `WIN` certificates on easy wins** (e.g. `1. d3 b3`: 20,761 entries with TB vs 15,768 without TB, though 1.8x faster to prove), because `df-pn` immediately accepts any 4-piece TB win regardless of DTM rather than looking for a shorter midgame mate. Weighting TB wins by DTM or preferring shorter mates during extraction is an open optimization.
+- **Open question:** Does `1. d2d3 a4a3` also hold a draw for Black (independently of `1... c4c3`), and how small can the minimal `ATLEAST_DRAW b` certificate for `mini4x5` be made?
+- **Spec issues:** None found in `SPEC v1.2`. Both `mcheck.py` and `mcheck2` agreed `VALID` on every generated and merged certificate.
+- **Tools wanted:** None required.
