@@ -734,12 +734,27 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
         return SolveStatus::PROVED;
     }
 
+    // Phase 0: Immediate tablebase resolution if root is in a loaded tablebase.
+    if (tb_probe_ && tb_probe_->is_loaded()) {
+        tb::WDL wdl = tb::WDL_UNKNOWN;
+        uint16_t dtm = 0;
+        if (tb_probe_->probe(root, wdl, dtm)) {
+            DfpnSolver df(8, tb_probe_);
+            SolveStats dst;
+            SolveStatus ds = df.solve_draw_via_disproof(root, prover, limits, cert_out, &dst);
+            dst.seconds = timer.elapsed();
+            if (stats_out) *stats_out = dst;
+            return ds;
+        }
+    }
+
     // Phase 1: Quick bounded df-pn probes for WIN <prover> and WIN <~prover>.
     // A forced mate for prover immediately proves ATLEAST_DRAW <prover>;
     // a forced mate for ~prover immediately disproves ATLEAST_DRAW <prover>!
+    uint64_t total_tb_hits = 0;
     {
         size_t probe_tt = std::clamp<size_t>(limits.tt_mb / 4, 8, 64);
-        DfpnSolver probe(probe_tt);
+        DfpnSolver probe(probe_tt, tb_probe_);
 
         SolveLimits p_lim = limits;
         p_lim.max_nodes = std::min<uint64_t>(limits.max_nodes / 10 + 1, 100000ULL);
@@ -749,6 +764,7 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
         Certificate win_cert;
         SolveStatus ws = probe.solve_win(root, prover, p_lim, cert_out ? &win_cert : nullptr, &pst);
         total_nodes += pst.nodes;
+        total_tb_hits += pst.tb_hits;
         if (ws == SolveStatus::PROVED) {
             if (cert_out) {
                 win_cert.convert_win_to_draw();
@@ -764,6 +780,7 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
                 *cert_out = std::move(win_cert);
             }
             st.nodes = total_nodes;
+            st.tb_hits = total_tb_hits;
             st.seconds = timer.elapsed();
             st.max_rank = 0;
             st.note = "proved via WIN " + std::string(1, prover == WHITE ? 'w' : 'b');
@@ -780,8 +797,10 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
             SolveStats ost;
             SolveStatus os = probe.solve_win(root, ~prover, o_lim, nullptr, &ost);
             total_nodes += ost.nodes;
+            total_tb_hits += ost.tb_hits;
             if (os == SolveStatus::PROVED) {
                 st.nodes = total_nodes;
+                st.tb_hits = total_tb_hits;
                 st.seconds = timer.elapsed();
                 st.note = "disproved via WIN " + std::string(1, (~prover) == WHITE ? 'w' : 'b');
                 if (stats_out) *stats_out = st;
@@ -806,6 +825,7 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
         total_nodes += css_nodes;
         if (cs == SolveStatus::PROVED || cs == SolveStatus::DISPROVED || cs == SolveStatus::ERROR) {
             st.nodes = total_nodes;
+            st.tb_hits = total_tb_hits;
             st.seconds = timer.elapsed();
             if (cs == SolveStatus::PROVED && st.note.empty()) {
                 st.note = "proved via closed-set invariant search";
@@ -821,17 +841,20 @@ SolveStatus DrawSolver::solve_atleast_draw(const Position& root,
         SolveLimits df_lim = limits;
         df_lim.max_seconds = std::max(0.01, limits.max_seconds - timer.elapsed());
         df_lim.max_nodes = limits.max_nodes - total_nodes;
-        DfpnSolver df(limits.tt_mb);
+        DfpnSolver df(limits.tt_mb, tb_probe_);
         SolveStats dst;
         SolveStatus ds = df.solve_draw_via_disproof(root, prover, df_lim, cert_out, &dst);
         total_nodes += dst.nodes;
+        total_tb_hits += dst.tb_hits;
         dst.nodes = total_nodes;
+        dst.tb_hits = total_tb_hits;
         dst.seconds = timer.elapsed();
         if (stats_out) *stats_out = dst;
         return ds;
     }
 
     st.nodes = total_nodes;
+    st.tb_hits = total_tb_hits;
     st.seconds = timer.elapsed();
     if (stats_out) *stats_out = st;
     return SolveStatus::LIMIT;

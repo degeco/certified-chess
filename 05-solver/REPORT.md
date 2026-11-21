@@ -199,3 +199,59 @@ Reproducing command:
 
 ### Tools wanted
 - None required for building or running `05-solver`. (For future scaling on `mini4x5` / `mini5x5`, linking against `04-tablebase` once available, or a MaxSAT/ILP solver such as `z3`/`ortools` for optimal post-hoc certificate minimisation, could be useful.)
+
+---
+
+## Round 2: DAG-Aware `df-pn`, Tablebase Integration, `msolve merge`, and `mini4x5` Analysis
+
+> **Rule caveat (`SPEC v1.2` section 2):** All values and certificates below are for the idealised game (infinite play = draw; no 50/75-move or threefold-repetition rule).
+
+### 1. What Was Added in Round 2
+
+- **Wider counters + DAG overcounting treatment (`src/dfpn.hpp`, `src/dfpn.cpp`, `src/common.hpp`):**
+  - Upgraded proof/disproof numbers and thresholds from `uint32_t` (`MAX_FINITE = 1e9`) to `uint64_t` (`MAX_FINITE = 2^60`, `INF = 2^62`), eliminating premature saturation.
+  - Implemented **SNDA (Shared-Node Duplicate Avoidance)** (`--dag-mode snda`, now default) alongside `--dag-mode sum|sqrt|damped|max`: each TT entry stores 32-bit `pn_sig` / `dn_sig` signatures identifying its critical Most Proving / Most Disproving descendant (`TTEntry` = 40 bytes, 4-way bucket = 160 bytes). When summing children at OR/AND nodes, siblings sharing the same critical descendant signature are collapsed via `max` instead of double-counted, while disjoint siblings are still summed normally, with exact O(1) threshold inversion.
+- **Read-only `04-tablebase` integration (`src/tb_probe.hpp`, `src/tb_probe.cpp`):**
+  - Compiles `../04-tablebase/src/{signature,indexer,tablebase}.cpp` into `build/tb_*.o` and loads all existing `.tb` tables for the root board size in read-only mode (66 tables for `4x5`, 29.89 MB total, auto-detected from `../04-tablebase/data`; controllable via `--tb-dir` / `--no-tb`).
+  - Fast `popcount(occupancy) <= 4` guard keeps overhead negligible on `>4`-piece positions. During `df-pn`, `<=4`-piece positions and captures directly into `<=4`-piece endgames resolve in O(1) without polluting the TT. During certificate extraction (`extract_or` and `extract_draw_certificate`), optimal TB moves are spliced directly into the single flat `#cert v1` output.
+- **Certificate loading and `msolve merge` (`src/certificate.hpp`, `src/certificate.cpp`, `src/main.cpp`):**
+  - Added strict SPEC v1.2 `Certificate::load_from_file` (rejecting `\r`, bad separators, duplicate entries, invalid FENs/ranks).
+  - Added `Certificate::merge` and CLI subcommand `msolve merge --root <pos|name> --claim <...> [--root-move <mv>] [--move "<pos>=<mv>"] [--moves-file <f>] [--out <out.cert>] <cert1> ...`.
+  - For overlapping FENs across `WIN` sub-certificates, `merge` selects the strictly smaller-rank entry (guaranteed acyclic by minimum-rank induction), recomputes exact topological ranks with cycle detection, optionally minimises, and verifies before writing.
+- **Dual-checker test suite (`tests/test_solver.cpp`, `tests/verify_all.py`):**
+  - Expanded C++ unit tests to 34 checks (all DAG modes, 66-table `4x5` TB load/probe/splice for `WIN` and `ATLEAST_DRAW`, `Certificate::merge`).
+  - Updated `tests/verify_all.py` to check every emitted certificate (including TB-spliced and merged certificates) with **both** `python3 ../03-checker/mcheck.py verify` and `../08-checker2/mcheck2 verify`.
+
+### 2. Before / After Measurements (Items 1 & 2)
+
+#### 2.1 Bottleneck Position `rqkr/1p1p/pPpP/P1PR/RQK1 b - -` (`WIN w`, 15 s, `--max-nodes 10000000 --tt-mb 512`)
+
+| Configuration | Nodes | `tb_hits` | `c3d2` `(pn, dn)` | `a5a4` `(pn, dn)` | `b5d3` `(pn, dn)` | Saturation / Overcounting |
+|---|---:|---:|---|---|---|---|
+| Round 1 baseline (`uint32 sum`, no TB) | 7,114,752 | 0 | `(932, 293,413,965)` | `(32,733, 276,784,611)` | `(0, INF)` | Saturates `1e9` shortly after 15 s |
+| Round 2 `uint64 sum`, `--no-tb` | 6,893,568 | 0 | `(158, 2,540,312,519)` | `(70,941, 1,962,746,515)` | `(0, INF)` | No saturation, but `dn` is 368x `nodes` |
+| Round 2 `uint64 snda`, `--no-tb` | 4,890,624 | 0 | `(25, 55,266)` | `(24,710, 32,771)` | `(0, INF)` | **`dn` reduced 46,000x**; sharp discrimination |
+| Round 2 `uint64 sqrt`, `--no-tb` | 6,821,888 | 0 | `(31, 498)` | `(122, 495)` | `(2, 656)` | Over-damps disjoint sums (hurts `d3_b3`) |
+| Round 2 `uint64 sum`, with 4pc TB | 4,743,168 | 57,857 | `(138, 39,442,723)` | `(25,829, 39,396,787)` | `(208, 38,152,946)` | TB cuts `dn` ~64x vs no-TB `sum` |
+| Round 2 `uint64 snda`, with 4pc TB | 4,564,992 | 32,973 | `(21, 38,879)` | `(24,588, 34,322)` | `(19, 35,064)` | Clean, non-exploding `pn`/`dn` |
+
+Reproducing command:
+```sh
+./msolve "rqkr/1p1p/pPpP/P1PR/RQK1 b - -" --claim "WIN w" --no-tb --dag-mode snda --max-seconds 15 --max-nodes 10000000 --tt-mb 512 --verbose
+```
+
+#### 2.2 Tablebase Speedup on Proven `mini4x5` Sub-Positions (`--tt-mb 512`)
+
+| Sub-position | Mode | Status | Nodes | `tb_hits` | Seconds | Entries (min) | Max Rank |
+|---|---|---|---:|---:|---:|---:|---:|
+| `1. d3 b3` (`rqkr/p1pp/1p1P/PPP1/RQKR w - -`) | `sum`, `--no-tb` | PROVED | 5,360,277 | 0 | 20.41 | 15,768 | 46 |
+| `1. d3 b3` (`rqkr/p1pp/1p1P/PPP1/RQKR w - -`) | `sum`, 4pc TB | PROVED | **2,917,664** | 51,367 | **11.62** | 18,680 | 46 |
+| `1. d3 b3` (`rqkr/p1pp/1p1P/PPP1/RQKR w - -`) | `snda`, 4pc TB | PROVED | **2,978,611** | 68,367 | **11.76** | 20,761 | 54 |
+| `1. d3 c3 2. Rd2 b3` (`rqkr/p2p/1ppP/PPPR/RQK1 w - -`) | Round 1 (no TB) | PROVED | 5,638,426 | 0 | 17.65 | 15,457 | 57 |
+| `1. d3 c3 2. Rd2 b3` (`rqkr/p2p/1ppP/PPPR/RQK1 w - -`) | `snda`, 4pc TB | PROVED | **1,741,593** | 69,951 | **7.99** | 18,881 | 62 |
+
+Note: `sqrt`/`damped`/`max` damped disjoint sibling sums at AND nodes and failed to prove `1. d3 b3` within 15 s, whereas `snda` preserves exact sums on disjoint trees while eliminating exponential DAG overcounting on transpositions.
+
+### 3. `mini4x5` Sub-Position Decomposition (In Progress)
+
+*(Updating as sub-positions are proved and merged.)*

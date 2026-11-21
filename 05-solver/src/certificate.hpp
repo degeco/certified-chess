@@ -31,11 +31,31 @@ struct Certificate {
         return mr;
     }
 
-    // Internal strict SPEC v1.1 verification (returns true iff valid).
+    // Internal strict SPEC v1.2 verification (returns true iff valid).
     bool verify(std::string* err = nullptr) const;
 
-    // Write SPEC v1.1 certificate file.
+    // Load a SPEC v1.2 `#cert v1` file with strict format validation.
+    static bool load_from_file(const std::string& path, Certificate& out, std::string* err = nullptr);
+
+    // Write SPEC v1.2 certificate file.
     bool write_to_file(const std::string& path, std::string* err = nullptr) const;
+
+    // Recompute exact minimal DAG ranks for a WIN certificate. Returns false if a cycle exists.
+    bool recompute_win_ranks(std::string* err = nullptr);
+
+    // Merge multiple verified sub-certificates and optional connecting moves into one flat certificate.
+    // For WIN claims, duplicate FENs across sub_certs keep the smaller-rank entry (preserving acyclicity).
+    // For ATLEAST_DRAW claims, both ATLEAST_DRAW <prover> and WIN <prover> sub_certs are accepted.
+    static bool merge(const Position& root,
+                      const Claim& claim,
+                      const std::vector<Certificate>& sub_certs,
+                      const std::vector<std::pair<Position, Move>>& connecting_moves,
+                      Certificate& out,
+                      bool minimize = true,
+                      size_t* raw_size = nullptr,
+                      size_t* pruned_size = nullptr,
+                      size_t* final_size = nullptr,
+                      std::string* err = nullptr);
 
     // Convert a valid WIN certificate to an ATLEAST_DRAW certificate (same prover, ranks = 0).
     void convert_win_to_draw();

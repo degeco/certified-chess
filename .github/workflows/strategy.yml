@@ -1,0 +1,60 @@
+name: strategy
+
+# Manual runs only. Expands a strategy program over a whole material class and checks the
+# resulting union certificate with both checkers.
+on:
+  workflow_dispatch:
+    inputs:
+      program:
+        description: "Strategy file under 07-strategies/strategies/, e.g. krk_v21.py"
+        required: true
+      material:
+        description: "KQK or KRK"
+        required: true
+      board:
+        description: "Board size, e.g. 8x8"
+        required: true
+        default: "8x8"
+
+permissions:
+  contents: read
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      PROGRAM: ${{ inputs.program }}
+      MATERIAL: ${{ inputs.material }}
+      BOARD: ${{ inputs.board }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build second checker
+        run: |
+          nproc; free -g | head -2; python3 --version; go version
+          make -C 08-checker2
+      - name: Expand over the whole class
+        run: |
+          mkdir -p out
+          cd 07-strategies
+          case "$PROGRAM" in *[!A-Za-z0-9_.-]*|"") echo "bad program name"; exit 2;; esac
+          time python3 harness.py expand-all "strategies/$PROGRAM" --material "$MATERIAL" \
+            --board "$BOARD" --out ../out/union.cert --jobs 4 --no-verify 2>&1 | tee ../out/expand.log | tail -30
+      - name: Check with the Go checker
+        run: |
+          wc -l out/union.cert
+          ./08-checker2/mcheck2 verify out/union.cert | tee out/check-go.log
+      - name: Check with the Python checker
+        run: |
+          timeout 300m python3 03-checker/mcheck.py verify out/union.cert | tee out/check-python.log
+      - name: Count class coverage
+        run: |
+          piece="${MATERIAL:1:1}"
+          python3 design/classcheck.py out/union.cert "$piece" "${BOARD%x*}" "${BOARD#*x}" | tee out/coverage.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: union-${{ inputs.program }}-${{ inputs.board }}
+          path: |
+            out/*.log
+          retention-days: 30

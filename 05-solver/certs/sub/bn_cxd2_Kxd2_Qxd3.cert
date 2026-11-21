@@ -1,0 +1,19 @@
+#cert v1
+#claim WIN w
+#root r1kr/1p1p/pP1q/P1PK/RQ2 w - -
+r1kr/1p1p/pP1q/P1PK/RQ2 w - -	c2d3	10
+rk1r/1p1p/pP1P/P2K/RQ2 w - -	b1c1	9
+rkr1/1p1p/pP1P/P2K/R1Q1 w - -	c1c4	8
+rk2/1prp/pP1P/P2K/R3 w - -	d3c4	7
+r1k1/1pPp/pP2/P2K/R3 w - -	d2d3	6
+1rk1/1pPp/pP1K/P3/R3 w - -	c4b5r	5
+1k2/1p1p/pP1K/P3/R3 w - -	d3d4	4
+2kr/rp1p/pP1P/P2K/RQ2 w - -	b1c1	3
+k3/1p1K/pP2/P3/R3 w - -	d4d3	3
+1k1r/rp1p/pP1P/P2K/R1Q1 w - -	c1c4	2
+1k2/1p2/pP1K/P3/R3 w - -	a1c1	2
+2k1/rpPp/pP1K/P3/R3 w - -	b3a4	2
+1rkr/1p1p/pP1P/P2K/RQ2 w - -	b1c1	1
+2k1/P1Pp/pp1K/P3/R3 w - -	a4a5q	1
+k2r/rpQp/pP1P/P2K/R3 w - -	c4d5	1
+k3/1p2/pP1K/P3/2R1 w - -	c1c5	1

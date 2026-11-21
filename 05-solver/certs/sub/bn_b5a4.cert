@@ -1,0 +1,31 @@
+#cert v1
+#claim WIN w
+#root r1kr/qp1p/pPpP/P1PR/RQK1 w - -
+r1kr/qp1p/pPpP/P1PR/RQK1 w - -	b3a4	5
+r1kr/P2p/pppP/P1PR/RQK1 w - -	b1b3	4
+r1kr/Pp1p/p2P/P1Pp/RQK1 w - -	c1d2	4
+1rkr/Pp1p/p1pP/P1PR/RQK1 w - -	b1b3	3
+2kr/r2p/pQpP/P1PR/R1K1 w - -	a1b1	3
+2kr/rp1p/p1pP/P1PR/RQK1 w - -	b1b3	3
+r1kr/P2p/pQ1P/P1Pp/R1K1 w - -	c1d2	3
+r1kr/P2p/pp1P/P1PK/RQ2 w - -	b1b3	3
+1rkr/Pp1p/p2P/P1PK/RQ2 w - -	b1b3	2
+1rkr/Pp1p/pQ1P/P1Pp/R1K1 w - -	c1d2	2
+2kr/r2p/pQ1P/P1PK/R3 w - -	a1b1	2
+2kr/r2p/pQ1P/P1Pp/1RK1 w - -	c1d2	2
+2kr/rp1p/p2P/P1PK/RQ2 w - -	b1b3	2
+2kr/rp1p/pQ1P/P1Pp/R1K1 w - -	c1d2	2
+1k1r/rp1p/pQ1P/P1PK/R3 w - -	b3d5	1
+1k1r/rp1p/pQpP/P1PR/R1K1 w - -	b3d5	1
+1rkr/P2p/pQ1P/P1PK/R3 w - -	a4b5q	1
+1rkr/P2p/pQpP/P1PR/R1K1 w - -	a4b5q	1
+2kr/1r1p/pQ1P/P1PK/1R2 w - -	b3b4	1
+2kr/1r1p/pQpP/P1PR/1RK1 w - -	b3b4	1
+2kr/2rp/pQ1P/P1PK/1R2 w - -	b3c4	1
+2kr/2rp/pQpP/P1PR/1RK1 w - -	b3c4	1
+r1kr/1p1p/pQ1P/P1PK/R3 w - -	b3c4	1
+r1kr/1p1p/pQpP/P1PR/R1K1 w - -	b3c4	1
+r1kr/3p/pQ1P/P1PK/1R2 w - -	b3b4	1
+r1kr/3p/pQpP/P1PR/1RK1 w - -	b3b4	1
+r1kr/Pp1p/pQ1P/P1PK/R3 w - -	b3c4	1
+r1kr/Pp1p/pQpP/P1PR/R1K1 w - -	b3c4	1

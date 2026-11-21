@@ -179,6 +179,82 @@ int main() {
               " -> " + std::to_string(pruned) + " -> " + std::to_string(after) + ")");
     }
 
+    // 10. All 4 DAG modes solve mini4x4 and 8x8 mate-in-4 cleanly
+    {
+        Position m4 = must_parse("rqkr/pppp/PPPP/RQKR w - -");
+        Position m8 = must_parse("4r2k/6pp/8/6N1/8/1Q6/6PP/6K1 w - -");
+        for (DagMode dm : {DagMode::SUM, DagMode::SNDA, DagMode::SQRT, DagMode::DAMPED, DagMode::MAX_PLUS}) {
+            SolveLimits dlim = lim;
+            dlim.dag_mode = dm;
+            DfpnSolver s1(16), s2(16);
+            Certificate c1, c2;
+            auto r1 = s1.solve_win(m4, WHITE, dlim, &c1);
+            auto r2 = s2.solve_win(m8, WHITE, dlim, &c2);
+            check(r1 == SolveStatus::PROVED && c1.verify(),
+                  std::string("mini4x4 WIN w valid under dag=") + dag_mode_to_string(dm));
+            check(r2 == SolveStatus::PROVED && c2.verify() && c2.max_rank() == 4,
+                  std::string("8x8 mate4 WIN w valid under dag=") + dag_mode_to_string(dm));
+        }
+    }
+
+    // 11. TablebaseProbe + splicing on 4x5 (both 4pc direct and 5pc->4pc splice)
+    {
+        TablebaseProbe tb;
+        std::string info;
+        bool loaded = tb.load_board("../04-tablebase/data", 4, 5, 4, &info);
+        check(loaded && tb.table_count() == 66, "TablebaseProbe loaded all 66 4x5 tables (" + info + ")");
+        if (loaded) {
+            // 4pc KQ vs KR on 4x5: k3/r3/4/1Q2/3K w - -
+            Position p4 = must_parse("k3/r3/4/1Q2/3K w - -");
+            DfpnSolver s(16, &tb);
+            Certificate c;
+            SolveStats st;
+            auto r = s.solve_win(p4, WHITE, lim, &c, &st);
+            check(r == SolveStatus::PROVED && c.verify() && st.tb_hits > 0 && st.nodes == 1,
+                  "4x5 4pc TB WIN w solved in 1 node and verified (entries=" + std::to_string(c.size()) + ")");
+
+            // 4pc draw position (K vs K on 4x5) via DrawSolver with TB
+            Position pk = must_parse("k3/4/4/4/3K w - -");
+            DrawSolver ds(&tb);
+            Certificate cd;
+            SolveStats dst;
+            auto rd = ds.solve_atleast_draw(pk, WHITE, lim, &cd, &dst);
+            check(rd == SolveStatus::PROVED && cd.verify(),
+                  "4x5 K vs K ATLEAST_DRAW w via TB verified (entries=" + std::to_string(cd.size()) + ")");
+        }
+    }
+
+    // 12. Certificate::merge (split mini4x4 across opponent replies + root move)
+    {
+        Position root = must_parse("rqkr/pppp/PPPP/RQKR w - -");
+        auto mv_opt = root.parse_move("c2d3");
+        check(mv_opt.has_value(), "mini4x4 c2d3 legal");
+        Position after_cxd3 = root.make_move(*mv_opt);
+        Move rbuf[MAX_MOVES];
+        int nr = after_cxd3.legal_moves(rbuf);
+        std::vector<Certificate> subs;
+        for (int i = 0; i < nr; ++i) {
+            Position rp = after_cxd3.make_move(rbuf[i]);
+            DfpnSolver s(16);
+            Certificate sc;
+            auto rs = s.solve_win(rp, WHITE, lim, &sc);
+            check(rs == SolveStatus::PROVED && sc.verify(),
+                  "mini4x4 sub-reply " + rbuf[i].to_string() + " proved");
+            subs.push_back(std::move(sc));
+        }
+        Certificate merged;
+        std::string merr;
+        bool mok = Certificate::merge(root, Claim{ClaimKind::WIN, WHITE}, subs,
+                                      {{root, *mv_opt}}, merged, true, nullptr, nullptr, nullptr, &merr);
+        check(mok && merged.verify(), "Certificate::merge combined mini4x4 sub-certs (" + merr + ")");
+
+        // Also test merging WIN sub-certs into ATLEAST_DRAW claim
+        Certificate merged_draw;
+        bool mdok = Certificate::merge(root, Claim{ClaimKind::ATLEAST_DRAW, WHITE}, subs,
+                                       {{root, *mv_opt}}, merged_draw, true, nullptr, nullptr, nullptr, &merr);
+        check(mdok && merged_draw.verify(), "Certificate::merge WIN subs into ATLEAST_DRAW (" + merr + ")");
+    }
+
     if (failures == 0) {
         std::cout << "ALL C++ UNIT TESTS PASSED\n";
         return 0;

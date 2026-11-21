@@ -12,3 +12,9 @@ agent*.log
 04-tablebase/data/
 04-tablebase/results/certs_*/
 .cache/
+# strategy union certificates: keep only the current best programs
+07-strategies/results/*.cert
+!07-strategies/results/kqk_v7_*.cert
+!07-strategies/results/krk_v21_*.cert
+!07-strategies/results/mini4x4-start.cert
+07-strategies/results/*.json

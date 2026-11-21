@@ -44,16 +44,48 @@ inline const char* status_to_string(SolveStatus st) {
     return "UNKNOWN";
 }
 
+enum class DagMode : uint8_t {
+    SUM = 0,      // Standard df-pn uint64 sum (no saturation)
+    SNDA = 1,     // Shared-Node Duplicate Avoidance (MPN/MDN signature deduplication)
+    SQRT = 2,     // max + isqrt(sum - max): sublinear DAG overcounting damping
+    DAMPED = 3,   // max + (sum - max) / 4: 1/4 damped sum
+    MAX_PLUS = 4  // max + (k_pos - 1): max with sibling-count tie-breaker
+};
+
+inline const char* dag_mode_to_string(DagMode m) {
+    switch (m) {
+        case DagMode::SUM:      return "sum";
+        case DagMode::SNDA:     return "snda";
+        case DagMode::SQRT:     return "sqrt";
+        case DagMode::DAMPED:   return "damped";
+        case DagMode::MAX_PLUS: return "max";
+    }
+    return "snda";
+}
+
+inline bool parse_dag_mode(std::string_view s, DagMode& out) {
+    if (s == "sum") { out = DagMode::SUM; return true; }
+    if (s == "snda") { out = DagMode::SNDA; return true; }
+    if (s == "sqrt") { out = DagMode::SQRT; return true; }
+    if (s == "damped") { out = DagMode::DAMPED; return true; }
+    if (s == "max") { out = DagMode::MAX_PLUS; return true; }
+    return false;
+}
+
 struct SolveLimits {
     uint64_t max_nodes = 20000000ULL;
     double max_seconds = 60.0;
     size_t tt_mb = 256;
     bool minimize = true;
     bool verbose = false;
+    DagMode dag_mode = DagMode::SNDA;
+    bool use_tb = true;
+    std::string tb_dir; // empty => auto-detect ../04-tablebase/data
 };
 
 struct SolveStats {
     uint64_t nodes = 0;
+    uint64_t tb_hits = 0;
     double seconds = 0.0;
     size_t raw_entries = 0;
     size_t pruned_entries = 0;

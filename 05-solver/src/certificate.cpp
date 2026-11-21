@@ -139,6 +139,313 @@ bool Certificate::write_to_file(const std::string& path, std::string* err) const
     return true;
 }
 
+namespace {
+
+bool parse_strict_rank(std::string_view s, uint32_t& out) {
+    if (s.empty()) return false;
+    if (s.size() > 1 && s[0] == '0') return false; // no leading zeros
+    uint64_t v = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10ULL + static_cast<uint64_t>(c - '0');
+        if (v > 0xFFFFFFFFULL) return false;
+    }
+    out = static_cast<uint32_t>(v);
+    return true;
+}
+
+} // namespace
+
+bool Certificate::load_from_file(const std::string& path, Certificate& out, std::string* err) {
+    auto fail = [&](const std::string& msg) {
+        if (err) *err = path + ": " + msg;
+        return false;
+    };
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return fail("cannot open file");
+
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (in.bad()) return fail("read error");
+
+    // SPEC v1.2: carriage return anywhere makes the certificate invalid.
+    if (content.find('\r') != std::string::npos) {
+        return fail("carriage return (CR) found in file");
+    }
+
+    std::vector<std::string_view> lines;
+    size_t pos = 0;
+    while (pos < content.size()) {
+        size_t nl = content.find('\n', pos);
+        if (nl == std::string::npos) {
+            lines.emplace_back(content.data() + pos, content.size() - pos);
+            break;
+        }
+        lines.emplace_back(content.data() + pos, nl - pos);
+        pos = nl + 1;
+    }
+
+    if (lines.size() < 3) return fail("missing header lines");
+    if (lines[0] != "#cert v1") return fail("invalid header line 1 (expected '#cert v1')");
+
+    // Line 2: #claim <WIN|ATLEAST_DRAW> <w|b>
+    Claim cl;
+    {
+        std::string_view l2 = lines[1];
+        if (l2 == "#claim WIN w") { cl = Claim{ClaimKind::WIN, WHITE}; }
+        else if (l2 == "#claim WIN b") { cl = Claim{ClaimKind::WIN, BLACK}; }
+        else if (l2 == "#claim ATLEAST_DRAW w") { cl = Claim{ClaimKind::ATLEAST_DRAW, WHITE}; }
+        else if (l2 == "#claim ATLEAST_DRAW b") { cl = Claim{ClaimKind::ATLEAST_DRAW, BLACK}; }
+        else return fail("invalid #claim header: " + std::string(l2));
+    }
+
+    // Line 3: #root <position string>
+    std::string_view l3 = lines[2];
+    if (l3.substr(0, 6) != "#root ") return fail("invalid #root header");
+    std::string_view root_sv = l3.substr(6);
+    Position root_pos;
+    std::string perr;
+    if (!Position::parse(root_sv, root_pos, &perr)) {
+        return fail("invalid root position: " + perr);
+    }
+    std::string root_canon = root_pos.to_fen();
+    if (root_canon != root_sv) {
+        return fail("non-canonical root position");
+    }
+
+    Certificate cert;
+    cert.claim = cl;
+    cert.root = root_pos;
+    cert.root_fen = root_canon;
+    cert.entries.reserve(lines.size() > 3 ? (lines.size() - 3) : 0);
+
+    for (size_t i = 3; i < lines.size(); ++i) {
+        std::string_view line = lines[i];
+        if (line.empty()) return fail("blank line at line " + std::to_string(i + 1));
+        if (line[0] == '#') return fail("comment line in body at line " + std::to_string(i + 1));
+
+        size_t t1 = line.find('\t');
+        if (t1 == std::string_view::npos) return fail("missing tab at line " + std::to_string(i + 1));
+        size_t t2 = line.find('\t', t1 + 1);
+        if (t2 == std::string_view::npos) return fail("missing second tab at line " + std::to_string(i + 1));
+        if (line.find('\t', t2 + 1) != std::string_view::npos) {
+            return fail("extra tab at line " + std::to_string(i + 1));
+        }
+
+        std::string_view fen_sv = line.substr(0, t1);
+        std::string_view mv_sv = line.substr(t1 + 1, t2 - (t1 + 1));
+        std::string_view rk_sv = line.substr(t2 + 1);
+
+        Position ep;
+        if (!Position::parse(fen_sv, ep, &perr)) {
+            return fail("invalid entry position at line " + std::to_string(i + 1) + ": " + perr);
+        }
+        std::string canon = ep.to_fen();
+        if (canon != fen_sv) {
+            return fail("non-canonical entry FEN at line " + std::to_string(i + 1));
+        }
+        if (ep.width() != root_pos.width() || ep.height() != root_pos.height()) {
+            return fail("board size mismatch at line " + std::to_string(i + 1));
+        }
+        if (ep.side_to_move() != cl.prover) {
+            return fail("wrong stm at line " + std::to_string(i + 1));
+        }
+
+        auto mv_opt = ep.parse_move(mv_sv);
+        if (!mv_opt || mv_opt->to_string() != mv_sv) {
+            return fail("illegal move '" + std::string(mv_sv) + "' at line " + std::to_string(i + 1));
+        }
+
+        uint32_t rk = 0;
+        if (!parse_strict_rank(rk_sv, rk)) {
+            return fail("invalid rank '" + std::string(rk_sv) + "' at line " + std::to_string(i + 1));
+        }
+        if (cl.kind == ClaimKind::ATLEAST_DRAW && rk != 0) {
+            return fail("nonzero rank in ATLEAST_DRAW at line " + std::to_string(i + 1));
+        }
+
+        if (cert.entries.find(canon) != cert.entries.end()) {
+            return fail("duplicate position at line " + std::to_string(i + 1));
+        }
+
+        CertEntry ce;
+        ce.pos = ep;
+        ce.fen = canon;
+        ce.move = *mv_opt;
+        ce.rank = rk;
+        cert.entries.emplace(std::move(canon), std::move(ce));
+    }
+
+    out = std::move(cert);
+    return true;
+}
+
+bool Certificate::recompute_win_ranks(std::string* err) {
+    if (claim.kind != ClaimKind::WIN) return true;
+    std::unordered_map<std::string, uint8_t> state; // 0=unvis, 1=visiting, 2=done
+    state.reserve(entries.size());
+    std::unordered_map<std::string, uint32_t> computed;
+    computed.reserve(entries.size());
+
+    bool has_cycle = false;
+    std::string cycle_fen;
+    Move rbuf[MAX_MOVES];
+
+    auto dfs = [&](auto&& self, const std::string& fen) -> uint32_t {
+        uint8_t st = state[fen];
+        if (st == 2) return computed[fen];
+        if (st == 1) {
+            has_cycle = true;
+            cycle_fen = fen;
+            return 0;
+        }
+        state[fen] = 1;
+        const CertEntry& e = entries.at(fen);
+        Position q = e.pos.make_move(e.move);
+        int nr = q.legal_moves(rbuf);
+        uint32_t max_child = 0;
+        for (int i = 0; i < nr; ++i) {
+            Position qr = q.make_move(rbuf[i]);
+            std::string qrfen = qr.to_fen();
+            if (entries.find(qrfen) == entries.end()) {
+                // Missing entry will be caught by verify(); return 0 here.
+                continue;
+            }
+            uint32_t cr = self(self, qrfen);
+            if (has_cycle) return 0;
+            if (cr > max_child) max_child = cr;
+        }
+        uint32_t rk = max_child + 1;
+        computed[fen] = rk;
+        state[fen] = 2;
+        return rk;
+    };
+
+    for (const auto& kv : entries) {
+        if (state[kv.first] == 0) {
+            dfs(dfs, kv.first);
+            if (has_cycle) {
+                if (err) *err = "cycle detected in WIN certificate at " + cycle_fen;
+                return false;
+            }
+        }
+    }
+
+    for (auto& kv : entries) {
+        kv.second.rank = computed[kv.first];
+    }
+    return true;
+}
+
+bool Certificate::merge(const Position& root,
+                        const Claim& claim,
+                        const std::vector<Certificate>& sub_certs,
+                        const std::vector<std::pair<Position, Move>>& connecting_moves,
+                        Certificate& out,
+                        bool do_minimize,
+                        size_t* raw_size,
+                        size_t* pruned_size,
+                        size_t* final_size,
+                        std::string* err) {
+    auto fail = [&](const std::string& msg) {
+        if (err) *err = msg;
+        return false;
+    };
+
+    Certificate merged;
+    merged.claim = claim;
+    merged.root = root;
+    merged.root_fen = root.to_fen();
+
+    // 1. Union all sub-certificate entries.
+    // For WIN: keep strictly smaller rank on overlap (guaranteed acyclic by minimum-rank theorem).
+    // For ATLEAST_DRAW: accept both ATLEAST_DRAW <prover> and WIN <prover> (ranks zeroed).
+    for (size_t idx = 0; idx < sub_certs.size(); ++idx) {
+        const Certificate& sc = sub_certs[idx];
+        if (sc.root.width() != root.width() || sc.root.height() != root.height()) {
+            return fail("sub-certificate #" + std::to_string(idx) + " board size mismatch");
+        }
+        if (sc.claim.prover != claim.prover) {
+            return fail("sub-certificate #" + std::to_string(idx) + " prover color mismatch");
+        }
+        if (claim.kind == ClaimKind::WIN && sc.claim.kind != ClaimKind::WIN) {
+            return fail("cannot merge ATLEAST_DRAW sub-certificate #" + std::to_string(idx) + " into WIN claim");
+        }
+
+        for (const auto& kv : sc.entries) {
+            auto it = merged.entries.find(kv.first);
+            if (it == merged.entries.end()) {
+                CertEntry ce = kv.second;
+                if (claim.kind == ClaimKind::ATLEAST_DRAW) ce.rank = 0;
+                merged.entries.emplace(kv.first, std::move(ce));
+            } else if (claim.kind == ClaimKind::WIN) {
+                if (kv.second.rank < it->second.rank) {
+                    it->second = kv.second;
+                }
+            }
+        }
+    }
+
+    // 2. Insert/apply explicit connecting moves.
+    Move lbuf[MAX_MOVES];
+    for (const auto& pm : connecting_moves) {
+        const Position& p = pm.first;
+        Move m = pm.second;
+        if (p.width() != root.width() || p.height() != root.height()) {
+            return fail("connecting move board size mismatch at " + p.to_fen());
+        }
+        if (p.side_to_move() != claim.prover) {
+            return fail("connecting move wrong side to move at " + p.to_fen());
+        }
+        int nm = p.legal_moves(lbuf);
+        bool legal = false;
+        for (int i = 0; i < nm; ++i) {
+            if (lbuf[i] == m) { legal = true; break; }
+        }
+        if (!legal) {
+            return fail("illegal connecting move " + m.to_string() + " at " + p.to_fen());
+        }
+        std::string fen = p.to_fen();
+        CertEntry ce;
+        ce.pos = p;
+        ce.fen = fen;
+        ce.move = m;
+        ce.rank = (claim.kind == ClaimKind::WIN) ? 1U : 0U;
+        merged.entries[fen] = std::move(ce);
+    }
+
+    // 3. Recompute exact WIN ranks (verifies acyclicity after connecting moves).
+    if (claim.kind == ClaimKind::WIN) {
+        std::string rerr;
+        if (!merged.recompute_win_ranks(&rerr)) {
+            return fail(rerr);
+        }
+    }
+
+    // 4. Verify BEFORE minimizing (so missing replies from root or connecting moves report clearly).
+    // Wait: prune unreachable entries only AFTER checking that root + all reachable entries are covered?
+    // No! Every sub-cert is already valid on all its own entries, so the union + valid connecting moves
+    // is ALREADY valid on all entries (even before pruning), as long as connecting moves' replies are covered!
+    std::string verr;
+    if (!merged.verify(&verr)) {
+        return fail("merged certificate invalid: " + verr);
+    }
+
+    if (do_minimize) {
+        merged.minimize(raw_size, pruned_size, final_size);
+        if (!merged.verify(&verr)) {
+            return fail("minimized merged certificate invalid: " + verr);
+        }
+    } else {
+        if (raw_size) *raw_size = merged.size();
+        if (pruned_size) *pruned_size = merged.size();
+        if (final_size) *final_size = merged.size();
+    }
+
+    out = std::move(merged);
+    return true;
+}
+
 void Certificate::convert_win_to_draw() {
     claim.kind = ClaimKind::ATLEAST_DRAW;
     for (auto& kv : entries) {

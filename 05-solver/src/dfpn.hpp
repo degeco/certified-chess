@@ -2,6 +2,7 @@
 
 #include "certificate.hpp"
 #include "common.hpp"
+#include "tb_probe.hpp"
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -10,10 +11,12 @@ namespace msolve {
 
 class DfpnSolver {
 public:
-    static constexpr uint32_t MAX_FINITE = 1000000000U;
-    static constexpr uint32_t INF        = 2000000000U;
+    static constexpr uint64_t MAX_FINITE = (1ULL << 60);
+    static constexpr uint64_t INF        = (1ULL << 62);
 
-    explicit DfpnSolver(size_t tt_mb = 256);
+    explicit DfpnSolver(size_t tt_mb = 256, const TablebaseProbe* tb = nullptr);
+
+    void set_tablebase(const TablebaseProbe* tb) { tb_probe_ = tb; }
 
     // Solve WIN <prover> from `root`.
     // If PROVED and `cert_out != nullptr`, extracts (and optionally minimizes) a verified certificate.
@@ -36,12 +39,15 @@ public:
     void clear();
 
     uint64_t total_nodes() const { return nodes_; }
+    uint64_t tb_hits() const { return tb_hits_; }
 
 private:
     struct TTEntry {
         uint64_t key = 0;       // 0 = empty slot
-        uint32_t pn = 0;
-        uint32_t dn = 0;
+        uint64_t pn = 0;
+        uint64_t dn = 0;
+        uint32_t pn_sig = 0;    // 32-bit signature of critical PN node (SNDA)
+        uint32_t dn_sig = 0;    // 32-bit signature of critical DN node (SNDA)
         uint16_t best_move = 0; // packed move (bit 15 = valid)
         uint16_t rank = 0;
         uint32_t work = 0;
@@ -52,8 +58,10 @@ private:
     };
 
     struct MidResult {
-        uint32_t pn = 1;
-        uint32_t dn = 1;
+        uint64_t pn = 1;
+        uint64_t dn = 1;
+        uint32_t pn_sig = 0;
+        uint32_t dn_sig = 0;
         uint16_t best_move = 0;
         uint16_t rank = 0;
         int min_cycle_depth = 1000000;
@@ -62,39 +70,63 @@ private:
     struct ChildInfo {
         Move move;
         Position pos;
-        uint32_t pn = 1;
-        uint32_t dn = 1;
+        uint64_t pn = 1;
+        uint64_t dn = 1;
+        uint32_t pn_sig = 0;
+        uint32_t dn_sig = 0;
         uint16_t rank = 0;
         int cyc_depth = 1000000;
         int order_score = 0;
     };
 
     static inline uint64_t norm_key(uint64_t h) { return h ? h : 1ULL; }
-    // Saturating addition for proof/disproof numbers: finite sums never become INF!
-    static inline uint32_t sat_add(uint32_t a, uint32_t b) {
-        if (a >= INF || b >= INF) return INF;
-        uint64_t s = static_cast<uint64_t>(a) + static_cast<uint64_t>(b);
-        return (s > MAX_FINITE) ? MAX_FINITE : static_cast<uint32_t>(s);
+    static inline uint32_t hash_sig(uint64_t h) {
+        uint32_t s = static_cast<uint32_t>(h ^ (h >> 32));
+        return s ? s : 1U;
     }
-    // Threshold addition: preserves strict > when th < INF and never overflows uint32_t.
-    static inline uint32_t thresh_add(uint32_t a, uint32_t b) {
+
+    // Saturating addition for proof/disproof numbers: finite sums never become INF.
+    static inline uint64_t sat_add(uint64_t a, uint64_t b) {
         if (a >= INF || b >= INF) return INF;
-        uint64_t s = static_cast<uint64_t>(a) + static_cast<uint64_t>(b);
-        return (s >= INF) ? (INF - 1) : static_cast<uint32_t>(s);
+        if (a > MAX_FINITE - b) return MAX_FINITE;
+        return a + b;
     }
-    static inline uint32_t sat_sub(uint32_t a, uint32_t b) {
+
+    // Threshold addition: preserves strict > when th < INF and never overflows uint64_t.
+    static inline uint64_t thresh_add(uint64_t a, uint64_t b) {
+        if (a >= INF || b >= INF) return INF;
+        if (a >= INF - 1 - b) return INF - 1;
+        return a + b;
+    }
+
+    static inline uint64_t sat_sub(uint64_t a, uint64_t b) {
         if (a >= INF) return INF;
         return (a > b) ? (a - b) : 0;
     }
 
+    // Exact floor integer square root for uint64_t.
+    static uint64_t isqrt64(uint64_t n);
+
+    // DAG-aware aggregation and exact threshold inversion.
+    uint64_t dag_aggregate(uint64_t sum, uint64_t max_v, uint32_t k_pos) const;
+    uint64_t dag_child_threshold(uint64_t th,
+                                 uint64_t best_v,
+                                 uint64_t max_other,
+                                 uint64_t sum_other,
+                                 uint32_t k_pos_other) const;
+
     const TTEntry* tt_lookup(uint64_t hash) const;
-    void tt_store(uint64_t hash, uint32_t pn, uint32_t dn,
+    void tt_store(uint64_t hash, uint64_t pn, uint64_t dn,
+                  uint32_t pn_sig, uint32_t dn_sig,
                   uint16_t best_move, uint16_t rank, uint32_t work);
 
     bool check_limits();
     int find_on_path(const Position& pos) const;
 
-    MidResult mid(const Position& pos, uint32_t thpn, uint32_t thdn, int depth);
+    // Probe tablebase from `prover_`'s WIN perspective. Returns true on hit.
+    bool probe_tb_for_win(const Position& pos, uint64_t& out_pn, uint64_t& out_dn, uint16_t& out_rank);
+
+    MidResult mid(const Position& pos, uint64_t thpn, uint64_t thdn, int depth);
 
     bool extract_certificate(const Position& root, Certificate& cert);
     bool extract_or(const Position& pos,
@@ -107,6 +139,8 @@ private:
 
     std::vector<TTBucket> tt_;
     size_t tt_mask_ = 0;
+
+    const TablebaseProbe* tb_probe_ = nullptr;
 
     // Secondary bounded maps preserving winning / disproof moves even under TT pressure.
     std::unordered_map<uint64_t, uint16_t> proof_moves_;
@@ -121,6 +155,7 @@ private:
     SolveLimits limits_;
     Timer timer_;
     uint64_t nodes_ = 0;
+    uint64_t tb_hits_ = 0;
     bool aborted_ = false;
 
     // Active recursion path for exact cycle detection.
