@@ -1,12 +1,15 @@
 #include "tablebase.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <queue>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_set>
 
 namespace tb {
@@ -375,19 +378,28 @@ bool TableStore::lookup(const mchess::Position& pos, WDL& out_wdl, uint16_t& out
     return out_wdl != WDL_ILLEGAL;
 }
 
-const Tablebase& TableStore::ensure(int w, int h, const MaterialSig& sig, bool save_to_disk) {
+const Tablebase& TableStore::ensure(int w, int h, const MaterialSig& sig,
+                                    bool save_to_disk,
+                                    bool load_deps_if_cached) {
     Key key{w, h, sig};
     auto it = tables_.find(key);
-    if (it != tables_.end()) return *it->second;
-
-    // Ensure dependencies first!
-    for (const MaterialSig& dep : sig.dependencies()) {
-        ensure(w, h, dep, save_to_disk);
+    if (it != tables_.end()) {
+        if (load_deps_if_cached) {
+            for (const MaterialSig& dep : sig.dependencies()) {
+                ensure(w, h, dep, save_to_disk, true);
+            }
+        }
+        return *it->second;
     }
 
-    // Check disk cache.
+    // Check disk cache first when transitive dependencies are not needed.
     std::string path = db_path(w, h, sig);
     if (save_to_disk && std::filesystem::exists(path)) {
+        if (load_deps_if_cached) {
+            for (const MaterialSig& dep : sig.dependencies()) {
+                ensure(w, h, dep, save_to_disk, true);
+            }
+        }
         if (auto loaded = Tablebase::load(path)) {
             loaded->id = static_cast<int>(by_id_.size());
             by_id_.push_back(loaded.get());
@@ -395,6 +407,11 @@ const Tablebase& TableStore::ensure(int w, int h, const MaterialSig& sig, bool s
             tables_.emplace(key, std::move(loaded));
             return ref;
         }
+    }
+
+    // Ensure direct dependencies before generating (they don't need grandchildren in RAM).
+    for (const MaterialSig& dep : sig.dependencies()) {
+        ensure(w, h, dep, save_to_disk, false);
     }
 
     // Generate tablebase via retrograde analysis.
@@ -416,61 +433,118 @@ const Tablebase& TableStore::ensure(int w, int h, const MaterialSig& sig, bool s
     std::vector<std::vector<uint32_t>> win_buckets(2);
     std::vector<std::vector<uint32_t>> loss_buckets(2);
 
-    // 1. Initialization pass
-    mchess::Move moves[mchess::MAX_MOVES];
-    for (uint32_t idx = 0; idx < N; ++idx) {
-        mchess::Position pos;
-        if (!tb->indexer->decode_position(idx, pos)) {
-            tb->wdl[idx] = WDL_ILLEGAL;
-            continue;
-        }
-        int nm = pos.legal_moves(moves);
-        if (nm == 0) {
-            if (pos.in_check()) {
-                tb->wdl[idx] = WDL_LOSS;
-                tb->dtm[idx] = 0;
-                loss_buckets[0].push_back(idx);
-            } else {
-                tb->wdl[idx] = WDL_DRAW;
-                tb->dtm[idx] = 0;
-            }
-            continue;
-        }
+    // 1. Parallel initialization pass (up to 4 threads)
+    {
+        unsigned hw = std::thread::hardware_concurrency();
+        unsigned nthreads = (N >= 8192) ? std::min<unsigned>(4u, std::max<unsigned>(1u, hw)) : 1u;
 
-        uint16_t rem = static_cast<uint16_t>(nm);
-        uint16_t best_win = UINT16_MAX;
-        uint16_t max_sub_win = 0;
+        std::vector<std::vector<std::vector<uint32_t>>> t_win(nthreads, std::vector<std::vector<uint32_t>>(2));
+        std::vector<std::vector<std::vector<uint32_t>>> t_loss(nthreads, std::vector<std::vector<uint32_t>>(2));
+        std::atomic<uint32_t> next_idx{0};
+        std::atomic<bool> has_err{false};
+        std::string err_msg;
+        std::mutex err_mtx;
 
-        for (int i = 0; i < nm; ++i) {
-            if (is_capture_or_promo(pos, moves[i])) {
-                mchess::Position next = pos.make_move(moves[i]);
-                WDL c_wdl = WDL_UNKNOWN;
-                uint16_t c_dtm = 0;
-                if (!lookup(next, c_wdl, c_dtm)) {
-                    throw std::runtime_error("missing child position in dependency table");
+        auto worker = [&](unsigned tid) {
+            mchess::Move moves[mchess::MAX_MOVES];
+            auto& lw = t_win[tid];
+            auto& ll = t_loss[tid];
+            constexpr uint32_t CHUNK = 4096;
+
+            while (!has_err.load(std::memory_order_relaxed)) {
+                uint32_t start = next_idx.fetch_add(CHUNK, std::memory_order_relaxed);
+                if (start >= N) break;
+                uint32_t end = std::min(N, start + CHUNK);
+
+                for (uint32_t idx = start; idx < end; ++idx) {
+                    mchess::Position pos;
+                    if (!tb->indexer->decode_position(idx, pos)) {
+                        tb->wdl[idx] = WDL_ILLEGAL;
+                        continue;
+                    }
+                    int nm = pos.legal_moves(moves);
+                    if (nm == 0) {
+                        if (pos.in_check()) {
+                            tb->wdl[idx] = WDL_LOSS;
+                            tb->dtm[idx] = 0;
+                            ll[0].push_back(idx);
+                        } else {
+                            tb->wdl[idx] = WDL_DRAW;
+                            tb->dtm[idx] = 0;
+                        }
+                        continue;
+                    }
+
+                    uint16_t rem = static_cast<uint16_t>(nm);
+                    uint16_t best_win = UINT16_MAX;
+                    uint16_t max_sub_win = 0;
+
+                    for (int i = 0; i < nm; ++i) {
+                        if (is_capture_or_promo(pos, moves[i])) {
+                            mchess::Position next = pos.make_move(moves[i]);
+                            WDL c_wdl = WDL_UNKNOWN;
+                            uint16_t c_dtm = 0;
+                            if (!lookup(next, c_wdl, c_dtm)) {
+                                std::lock_guard<std::mutex> lk(err_mtx);
+                                if (!has_err.exchange(true)) {
+                                    err_msg = "missing child position in dependency table: " + next.to_fen();
+                                }
+                                return;
+                            }
+                            if (c_wdl == WDL_LOSS) {
+                                uint16_t cand = static_cast<uint16_t>(c_dtm + 1);
+                                if (cand < best_win) best_win = cand;
+                            } else if (c_wdl == WDL_WIN) {
+                                --rem;
+                                if (c_dtm > max_sub_win) max_sub_win = c_dtm;
+                            }
+                        }
+                    }
+
+                    rem_children[idx] = rem;
+                    max_sub_win_dtm[idx] = max_sub_win;
+
+                    if (best_win < UINT16_MAX) {
+                        if (lw.size() <= best_win) lw.resize(best_win + 1);
+                        lw[best_win].push_back(idx);
+                    } else if (rem == 0) {
+                        uint16_t l_dtm = static_cast<uint16_t>(max_sub_win + 1);
+                        tb->wdl[idx] = WDL_LOSS;
+                        tb->dtm[idx] = l_dtm;
+                        if (ll.size() <= l_dtm) ll.resize(l_dtm + 1);
+                        ll[l_dtm].push_back(idx);
+                    }
                 }
-                if (c_wdl == WDL_LOSS) {
-                    uint16_t cand = static_cast<uint16_t>(c_dtm + 1);
-                    if (cand < best_win) best_win = cand;
-                } else if (c_wdl == WDL_WIN) {
-                    --rem;
-                    if (c_dtm > max_sub_win) max_sub_win = c_dtm;
-                }
             }
+        };
+
+        if (nthreads == 1) {
+            worker(0);
+        } else {
+            std::vector<std::thread> threads;
+            threads.reserve(nthreads);
+            for (unsigned t = 0; t < nthreads; ++t) threads.emplace_back(worker, t);
+            for (auto& th : threads) th.join();
+        }
+        if (has_err.load()) {
+            throw std::runtime_error(err_msg);
         }
 
-        rem_children[idx] = rem;
-        max_sub_win_dtm[idx] = max_sub_win;
-
-        if (best_win < UINT16_MAX) {
-            if (win_buckets.size() <= best_win) win_buckets.resize(best_win + 1);
-            win_buckets[best_win].push_back(idx);
-        } else if (rem == 0) {
-            uint16_t l_dtm = static_cast<uint16_t>(max_sub_win + 1);
-            tb->wdl[idx] = WDL_LOSS;
-            tb->dtm[idx] = l_dtm;
-            if (loss_buckets.size() <= l_dtm) loss_buckets.resize(l_dtm + 1);
-            loss_buckets[l_dtm].push_back(idx);
+        for (unsigned t = 0; t < nthreads; ++t) {
+            if (t_win[t].size() > win_buckets.size()) win_buckets.resize(t_win[t].size());
+            for (size_t d = 0; d < t_win[t].size(); ++d) {
+                if (!t_win[t][d].empty()) {
+                    win_buckets[d].insert(win_buckets[d].end(), t_win[t][d].begin(), t_win[t][d].end());
+                    std::vector<uint32_t>().swap(t_win[t][d]);
+                }
+            }
+            if (t_loss[t].size() > loss_buckets.size()) loss_buckets.resize(t_loss[t].size());
+            for (size_t d = 0; d < t_loss[t].size(); ++d) {
+                if (!t_loss[t][d].empty()) {
+                    loss_buckets[d].insert(loss_buckets[d].end(), t_loss[t][d].begin(), t_loss[t][d].end());
+                    std::vector<uint32_t>().swap(t_loss[t][d]);
+                }
+            }
         }
     }
 
@@ -544,85 +618,132 @@ const Tablebase& TableStore::ensure(int w, int h, const MaterialSig& sig, bool s
 }
 
 bool TableStore::verify(int w, int h, const MaterialSig& sig, std::string* err) {
-    const Tablebase& tb = ensure(w, h, sig);
-    const uint32_t N = tb.indexer->size();
-    mchess::Move moves[mchess::MAX_MOVES];
+    const Tablebase& tb = ensure(w, h, sig, true, false);
+    for (const MaterialSig& dep : sig.dependencies()) {
+        ensure(w, h, dep, true, false);
+    }
 
-    auto fail = [&](uint32_t idx, const std::string& msg) -> bool {
-        if (err) {
-            std::ostringstream oss;
-            oss << w << "x" << h << " " << sig.to_string() << " idx=" << idx << ": " << msg;
-            *err = oss.str();
+    const uint32_t N = tb.indexer->size();
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned nthreads = (N >= 8192) ? std::min<unsigned>(4u, std::max<unsigned>(1u, hw)) : 1u;
+
+    std::atomic<uint32_t> next_idx{0};
+    std::atomic<bool> failed{false};
+    std::mutex err_mtx;
+
+    auto worker = [&]() {
+        mchess::Move moves[mchess::MAX_MOVES];
+        constexpr uint32_t CHUNK = 4096;
+
+        auto fail = [&](uint32_t idx, const std::string& msg) {
+            std::lock_guard<std::mutex> lk(err_mtx);
+            if (!failed.exchange(true)) {
+                if (err) {
+                    std::ostringstream oss;
+                    oss << w << "x" << h << " " << sig.to_string() << " idx=" << idx << ": " << msg;
+                    *err = oss.str();
+                }
+            }
+        };
+
+        while (!failed.load(std::memory_order_relaxed)) {
+            uint32_t start = next_idx.fetch_add(CHUNK, std::memory_order_relaxed);
+            if (start >= N) break;
+            uint32_t end = std::min(N, start + CHUNK);
+
+            for (uint32_t idx = start; idx < end; ++idx) {
+                if (failed.load(std::memory_order_relaxed)) return;
+
+                mchess::Position pos;
+                bool valid = tb.indexer->decode_position(idx, pos);
+                uint8_t v = tb.wdl[idx];
+                uint16_t d = tb.dtm[idx];
+
+                if (!valid) {
+                    if (v != WDL_ILLEGAL) { fail(idx, "invalid position not marked ILLEGAL"); return; }
+                    continue;
+                }
+                if (v == WDL_ILLEGAL) { fail(idx, "valid position marked ILLEGAL"); return; }
+
+                int nm = pos.legal_moves(moves);
+                if (nm == 0) {
+                    if (pos.in_check()) {
+                        if (v != WDL_LOSS || d != 0) { fail(idx, "checkmate must be LOSS dtm=0"); return; }
+                    } else {
+                        if (v != WDL_DRAW || d != 0) { fail(idx, "stalemate must be DRAW dtm=0"); return; }
+                    }
+                    continue;
+                }
+
+                bool has_draw = false;
+                bool has_loss = false;
+                bool all_win = true;
+                uint16_t min_loss_dtm = UINT16_MAX;
+                uint16_t max_win_dtm = 0;
+
+                for (int i = 0; i < nm; ++i) {
+                    mchess::Position next = pos.make_move(moves[i]);
+                    WDL cw = WDL_UNKNOWN;
+                    uint16_t cd = 0;
+                    if (!is_capture_or_promo(pos, moves[i])) {
+                        uint32_t c_idx = tb.indexer->encode_position(next);
+                        if (c_idx == UINT32_MAX || tb.wdl[c_idx] == WDL_ILLEGAL) {
+                            fail(idx, "missing quiet successor " + next.to_fen());
+                            return;
+                        }
+                        cw = static_cast<WDL>(tb.wdl[c_idx]);
+                        cd = tb.dtm[c_idx];
+                    } else if (!lookup(next, cw, cd)) {
+                        fail(idx, "missing successor " + next.to_fen());
+                        return;
+                    }
+                    if (cw == WDL_LOSS) {
+                        has_loss = true;
+                        all_win = false;
+                        if (cd < min_loss_dtm) min_loss_dtm = cd;
+                    } else if (cw == WDL_DRAW) {
+                        has_draw = true;
+                        all_win = false;
+                    } else if (cw == WDL_WIN) {
+                        if (cd > max_win_dtm) max_win_dtm = cd;
+                    } else {
+                        fail(idx, "illegal successor status");
+                        return;
+                    }
+                }
+
+                if (v == WDL_WIN) {
+                    if (!has_loss || d != min_loss_dtm + 1 || (d & 1U) == 0) {
+                        fail(idx, "WIN entry inconsistent with successors");
+                        return;
+                    }
+                } else if (v == WDL_LOSS) {
+                    if (!all_win || d != max_win_dtm + 1 || (d & 1U) == 1 || d == 0) {
+                        fail(idx, "LOSS entry inconsistent with successors");
+                        return;
+                    }
+                } else if (v == WDL_DRAW) {
+                    if (has_loss || !has_draw || d != 0) {
+                        fail(idx, "DRAW entry inconsistent with successors");
+                        return;
+                    }
+                } else {
+                    fail(idx, "unknown WDL value");
+                    return;
+                }
+            }
         }
-        return false;
     };
 
-    for (uint32_t idx = 0; idx < N; ++idx) {
-        mchess::Position pos;
-        bool valid = tb.indexer->decode_position(idx, pos);
-        uint8_t v = tb.wdl[idx];
-        uint16_t d = tb.dtm[idx];
-
-        if (!valid) {
-            if (v != WDL_ILLEGAL) return fail(idx, "invalid position not marked ILLEGAL");
-            continue;
-        }
-        if (v == WDL_ILLEGAL) return fail(idx, "valid position marked ILLEGAL");
-
-        int nm = pos.legal_moves(moves);
-        if (nm == 0) {
-            if (pos.in_check()) {
-                if (v != WDL_LOSS || d != 0) return fail(idx, "checkmate must be LOSS dtm=0");
-            } else {
-                if (v != WDL_DRAW || d != 0) return fail(idx, "stalemate must be DRAW dtm=0");
-            }
-            continue;
-        }
-
-        bool has_draw = false;
-        bool has_loss = false;
-        bool all_win = true;
-        uint16_t min_loss_dtm = UINT16_MAX;
-        uint16_t max_win_dtm = 0;
-
-        for (int i = 0; i < nm; ++i) {
-            mchess::Position next = pos.make_move(moves[i]);
-            WDL cw = WDL_UNKNOWN;
-            uint16_t cd = 0;
-            if (!lookup(next, cw, cd)) {
-                return fail(idx, "missing successor " + next.to_fen());
-            }
-            if (cw == WDL_LOSS) {
-                has_loss = true;
-                all_win = false;
-                if (cd < min_loss_dtm) min_loss_dtm = cd;
-            } else if (cw == WDL_DRAW) {
-                has_draw = true;
-                all_win = false;
-            } else if (cw == WDL_WIN) {
-                if (cd > max_win_dtm) max_win_dtm = cd;
-            } else {
-                return fail(idx, "illegal successor status");
-            }
-        }
-
-        if (v == WDL_WIN) {
-            if (!has_loss || d != min_loss_dtm + 1 || (d & 1U) == 0) {
-                return fail(idx, "WIN entry inconsistent with successors");
-            }
-        } else if (v == WDL_LOSS) {
-            if (!all_win || d != max_win_dtm + 1 || (d & 1U) == 1 || d == 0) {
-                return fail(idx, "LOSS entry inconsistent with successors");
-            }
-        } else if (v == WDL_DRAW) {
-            if (has_loss || !has_draw || d != 0) {
-                return fail(idx, "DRAW entry inconsistent with successors");
-            }
-        } else {
-            return fail(idx, "unknown WDL value");
-        }
+    if (nthreads == 1) {
+        worker();
+    } else {
+        std::vector<std::thread> threads;
+        threads.reserve(nthreads);
+        for (unsigned t = 0; t < nthreads; ++t) threads.emplace_back(worker);
+        for (auto& th : threads) th.join();
     }
-    return true;
+    return !failed.load();
 }
 
 bool TableStore::export_certificates(const mchess::Position& root_pos,

@@ -20,3 +20,4 @@ timestamp	family	program	nodes	length	covered	total	coverage	entries	max_rank	co
 2026-11-21T16:07:07Z	krk	strategies/krk_v6.py[legacy]	1071	2338	448	1000	0.4480	8254	12	3.53	149.112	1.691
 2026-11-21T16:32:59Z	kqk	strategies/kqk_v7.py	793	1747	1000	1000	1.0000	19571	17	11.20	75.057	3.158
 2026-11-21T16:38:43Z	krk	strategies/krk_v21.py	892	2230	1000	1000	1.0000	433400	68	194.35	1233.870	72.487
+2026-11-21T16:55:05Z	kqk	strategies/kqk_lia.py	1165	2774	1000	1000	1.0000	19798	17	7.14	53.098	2.478

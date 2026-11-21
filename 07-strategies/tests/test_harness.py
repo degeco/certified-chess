@@ -436,6 +436,63 @@ def move(pos):
             aud["total_steps"], aud["decrease"] + aud["equal"] + aud["increase"]
         )
 
+    # --- Round 3: LIA linter and witness-move audit ---
+
+    def test_lint_lia_rejects_nonlinear_and_loops_and_accepts_linear(self) -> None:
+        # kqk_v7 uses bw * bh and a generator sum over squares -> must be rejected
+        res_v7 = harness.lint_lia(BASE_DIR / "strategies" / "kqk_v7.py")
+        self.assertFalse(res_v7["ok"])
+        joined = "\n".join(res_v7["violations"])
+        self.assertIn("bw * bh", joined)
+        self.assertIn("sum", joined)
+
+        # Division by variable must be rejected
+        bad_div = self._write_prog(
+            "bad_div.py",
+            "import rules\ndef _pot(pos):\n    return (pos.width // pos.height,)\ndef move(pos):\n    return rules.legal_moves(pos)[0]\n",
+        )
+        res_div = harness.lint_lia(bad_div)
+        self.assertFalse(res_div["ok"])
+
+        # Pure LIA function must be accepted
+        good_lia = self._write_prog(
+            "good_lia.py",
+            """import rules
+def _f(p, c):
+    i = p.board.index(c)
+    return i % p.width, i // p.width
+def _pot(pos):
+    if "Q" not in pos.board:
+        return (99, 99)
+    w, h = pos.width, pos.height
+    kf, kr = _f(pos, "K")
+    qf, qr = _f(pos, "Q")
+    bf, br = _f(pos, "k")
+    d = abs(kf - bf) + max(abs(kr - br), 2 * (w // 2))
+    return (0, d if bf < qf else -d)
+def move(pos):
+    return rules.legal_moves(pos)[0]
+""",
+        )
+        res_good = harness.lint_lia(good_lia)
+        self.assertTrue(res_good["ok"], res_good["violations"])
+
+    def test_audit_hint_reports_violations_on_bad_hint(self) -> None:
+        prog = self._write_prog(
+            "bad_hint.py",
+            """import rules
+def _pot(pos):
+    return (0,)
+def hint(pos):
+    return "a1a1"
+def move(pos):
+    return rules.legal_moves(pos)[0]
+""",
+        )
+        res = harness.audit_hint(prog, "KQK", 3, 3, jobs=1)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["illegal"], res["valid_positions"])
+
 
 if __name__ == "__main__":
     unittest.main()

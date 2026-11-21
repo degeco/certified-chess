@@ -57,8 +57,10 @@ class TableStore {
 public:
     explicit TableStore(std::string db_dir = "data") : db_dir_(std::move(db_dir)) {}
 
-    // Ensure signature (and all transitive dependencies) for (w, h) are loaded or generated.
-    const Tablebase& ensure(int w, int h, const MaterialSig& sig, bool save_to_disk = true);
+    // Ensure signature (and transitive or direct dependencies) for (w, h) are loaded or generated.
+    const Tablebase& ensure(int w, int h, const MaterialSig& sig,
+                            bool save_to_disk = true,
+                            bool load_deps_if_cached = true);
 
     const Tablebase* find(int w, int h, const MaterialSig& sig) const;
 

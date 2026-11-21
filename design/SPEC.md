@@ -184,6 +184,11 @@ certificate, which says nothing about 4x4 boards in general.
 | `05-solver` | Proof search that emits certificates | 02, 03 |
 | `06-complexity` | State-space counts and estimates per board | 02 |
 | `07-strategies` | Strategy programs as compressed proofs; the iteration loop of `LOOP.md` | 03 |
+| `08-checker2` | Second independent checker in Go, written from this spec alone | nothing |
+| `09-ladder` | The piece ladder on 8x8 (`LADDER.md`): rules per material class, scored against tablebases | 03, 04, 07, 08 |
+
+The direction of the project is set by `LADDER.md`: piece count on 8x8 is the axis; small
+boards are the test bed.
 
 `02` and `03` implement the rules twice on purpose. They are compared move for move on random
 positions before either is believed: `design/difftest.sh` (random placements, all board

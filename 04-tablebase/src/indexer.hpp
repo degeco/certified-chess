@@ -54,6 +54,7 @@ public:
     }
 
     static std::string raw_to_fen(int w, int h, const RawState& st);
+    static int raw_to_fen_buf(int w, int h, const RawState& st, char* buf);
 
 private:
     struct Group {

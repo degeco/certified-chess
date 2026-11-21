@@ -104,7 +104,14 @@ def check_sources_table():
 
 
 def check_links():
-    for fn in ("assessment.md", "small-boards.md", "sources.md", "recent-methods.md", "transfer.md"):
+    for fn in (
+        "assessment.md",
+        "small-boards.md",
+        "sources.md",
+        "recent-methods.md",
+        "transfer.md",
+        "novelty-4x5.md",
+    ):
         p = os.path.join(ROOT, fn)
         with open(p, "r", encoding="utf-8") as f:
             text = f.read()
@@ -112,6 +119,218 @@ def check_links():
             full = "/" + target
             assert os.path.exists(full), f"Broken file link in {fn}: {full}"
     print("PASS all file:// links resolve to existing files.")
+
+
+def check_novelty_4x5():
+    path = os.path.join(ROOT, "novelty-4x5.md")
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    words = re.findall(r"\S+", text)
+    required_sections = [
+        "## 1. Search Log",
+        "## 2. Rule Comparison",
+        "## 3. Verdict",
+        "## 4. Where It Would Belong",
+    ]
+    for sec in required_sections:
+        assert sec in text, f"Missing required section in novelty-4x5.md: {sec}"
+    required_topics = [
+        "Pritchard",
+        "Hammersborg",
+        "2211.05500",
+        "explainable-minichess",
+        "ply_count_without_adv > 20",
+        "kirill-kryukov.com",
+        "talkchess.com",
+        "greenchess.net",
+        "Fairy-Stockfish",
+        "ICGA Journal",
+        "Mhalla & Prost",
+        "Watkins",
+        "Sayle",
+        "1. d3 c3 2. Rd2 a3 3. b3 Ra4",
+        "2. c2c4",
+    ]
+    for topic in required_topics:
+        assert topic in text, f"Missing required topic in novelty-4x5.md: {topic}"
+    print(
+        f"PASS novelty-4x5.md verified: {len(words)} words; "
+        "all 4 sections and all required search/rule/venue items present."
+    )
+
+
+def check_4x5_rule_divergence_and_mainline():
+    """Verify 4x5 mainline legality under SPEC.md rules and ply-3 divergence vs Silverman/Hammersborg double-step rules."""
+
+    def parse_fen_4x5(fen):
+        parts = fen.split(" ")
+        placement, stm, castling, ep = parts[0], parts[1], parts[2], parts[3]
+        assert castling == "-"
+        ranks = placement.split("/")
+        assert len(ranks) == 5
+        board = {}
+        for r_idx, rank_str in enumerate(ranks):
+            y = 4 - r_idx
+            x = 0
+            for ch in rank_str:
+                if ch.isdigit():
+                    x += int(ch)
+                else:
+                    board[(x, y)] = ch
+                    x += 1
+            assert x == 4
+        return board, stm, ep
+
+    def to_fen_4x5(board, stm, ep="-"):
+        ranks = []
+        for y in range(4, -1, -1):
+            empty = 0
+            s = ""
+            for x in range(4):
+                p = board.get((x, y))
+                if p is None:
+                    empty += 1
+                else:
+                    if empty:
+                        s += str(empty)
+                        empty = 0
+                    s += p
+            if empty:
+                s += str(empty)
+            ranks.append(s)
+        return f"{'/'.join(ranks)} {stm} - {ep}"
+
+    def pseudo_moves_4x5(board, stm, ep="-", allow_double_and_ep=False):
+        white = stm == "w"
+        moves = []
+        ep_coord = None
+        if allow_double_and_ep and ep != "-":
+            ep_coord = (FILES.index(ep[0]), int(ep[1]) - 1)
+        for (x, y), p in board.items():
+            if p.isupper() != white:
+                continue
+            pt = p.upper()
+            if pt == "P":
+                dy = 1 if white else -1
+                start_y = 1 if white else 3
+                ny = y + dy
+                if 0 <= ny < 5:
+                    if (x, ny) not in board:
+                        promos = ["q", "r", "b", "n"] if ny in (0, 4) else [""]
+                        for pr in promos:
+                            moves.append(((x, y), (x, ny), pr, False))
+                        if allow_double_and_ep and y == start_y:
+                            nny = y + 2 * dy
+                            if (x, nny) not in board:
+                                moves.append(((x, y), (x, nny), "", False))
+                    for dx in (-1, 1):
+                        nx = x + dx
+                        if 0 <= nx < 4:
+                            if (nx, ny) in board and board[(nx, ny)].isupper() != white:
+                                promos = ["q", "r", "b", "n"] if ny in (0, 4) else [""]
+                                for pr in promos:
+                                    moves.append(((x, y), (nx, ny), pr, False))
+                            elif ep_coord is not None and (nx, ny) == ep_coord:
+                                moves.append(((x, y), (nx, ny), "", True))
+            elif pt == "K":
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < 4 and 0 <= ny < 5:
+                            if (nx, ny) not in board or board[(nx, ny)].isupper() != white:
+                                moves.append(((x, y), (nx, ny), "", False))
+            elif pt in ("R", "B", "Q"):
+                dirs = []
+                if pt in ("R", "Q"):
+                    dirs += [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                if pt in ("B", "Q"):
+                    dirs += [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+                for dx, dy in dirs:
+                    nx, ny = x + dx, y + dy
+                    while 0 <= nx < 4 and 0 <= ny < 5:
+                        if (nx, ny) not in board:
+                            moves.append(((x, y), (nx, ny), "", False))
+                        else:
+                            if board[(nx, ny)].isupper() != white:
+                                moves.append(((x, y), (nx, ny), "", False))
+                            break
+                        nx += dx
+                        ny += dy
+            elif pt == "N":
+                for dx, dy in [
+                    (1, 2), (2, 1), (-1, 2), (-2, 1),
+                    (1, -2), (2, -1), (-1, -2), (-2, -1),
+                ]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < 4 and 0 <= ny < 5:
+                        if (nx, ny) not in board or board[(nx, ny)].isupper() != white:
+                            moves.append(((x, y), (nx, ny), "", False))
+        return moves
+
+    def apply_4x5(board, stm, m, allow_double_and_ep=False):
+        nb = dict(board)
+        (x1, y1), (x2, y2), pr, is_ep = m
+        piece = nb.pop((x1, y1))
+        if is_ep:
+            nb.pop((x2, y1))
+        if pr:
+            piece = pr.upper() if stm == "w" else pr.lower()
+        nb[(x2, y2)] = piece
+        nstm = "b" if stm == "w" else "w"
+        nep = "-"
+        if allow_double_and_ep and piece.upper() == "P" and abs(y2 - y1) == 2:
+            mid_y = (y1 + y2) // 2
+            nep = f"{FILES[x1]}{mid_y + 1}"
+        return nb, nstm, nep
+
+    def in_check_4x5(board, stm):
+        king = "K" if stm == "w" else "k"
+        kp = next(pos for pos, pc in board.items() if pc == king)
+        opp = "b" if stm == "w" else "w"
+        return any(m[1] == kp for m in pseudo_moves_4x5(board, opp, "-", False))
+
+    def legal_moves_4x5(board, stm, ep="-", allow_double_and_ep=False):
+        res = {}
+        for m in pseudo_moves_4x5(board, stm, ep, allow_double_and_ep):
+            nb, nstm, nep = apply_4x5(board, stm, m, allow_double_and_ep)
+            if not in_check_4x5(nb, stm):
+                s = f"{FILES[m[0][0]]}{m[0][1]+1}{FILES[m[1][0]]}{m[1][1]+1}{m[2]}"
+                res[s] = (nb, nstm, nep)
+        return res
+
+    # 1. Verify SPEC.md mini4x5 mainline: 1. d3 c3 2. Rd2 a3 3. b3 Ra4
+    root = "rqkr/pppp/4/PPPP/RQKR w - -"
+    b, stm, ep = parse_fen_4x5(root)
+    lm1 = legal_moves_4x5(b, stm, ep, allow_double_and_ep=False)
+    assert sorted(lm1.keys()) == ["a2a3", "b2b3", "c2c3", "d2d3"], f"Unexpected ply-1 moves: {lm1.keys()}"
+    mainline = ["d2d3", "c4c3", "d1d2", "a4a3", "b2b3", "a5a4"]
+    for mv in mainline:
+        lm = legal_moves_4x5(b, stm, ep, allow_double_and_ep=False)
+        assert mv in lm, f"Mainline move {mv} illegal in {to_fen_4x5(b, stm, ep)}"
+        b, stm, ep = lm[mv]
+    assert to_fen_4x5(b, stm) == "1qkr/rp1p/pPpP/P1PR/RQK1 w - -"
+
+    # 2. Verify ply-3 rule divergence after 1. d2d3 c4d3
+    b0, s0, e0 = parse_fen_4x5(root)
+    b1, s1, e1 = legal_moves_4x5(b0, s0, e0, False)["d2d3"]
+    b2, s2, e2 = legal_moves_4x5(b1, s1, e1, False)["c4d3"]
+    assert to_fen_4x5(b2, s2) == "rqkr/pp1p/3p/PPP1/RQKR w - -"
+    spec_moves_ply3 = set(legal_moves_4x5(b2, s2, e2, allow_double_and_ep=False).keys())
+    hamm_moves_ply3 = set(legal_moves_4x5(b2, s2, e2, allow_double_and_ep=True).keys())
+    assert "c2c4" not in spec_moves_ply3
+    assert "c2c4" in hamm_moves_ply3
+    assert hamm_moves_ply3 - spec_moves_ply3 == {"c2c4"}
+    # And after 2. c2c4 under Silverman/Hammersborg rules, Black has en passant 2... b4c3 at ply 4
+    b3_h, s3_h, e3_h = legal_moves_4x5(b2, s2, e2, allow_double_and_ep=True)["c2c4"]
+    assert e3_h == "c3"
+    hamm_moves_ply4 = set(legal_moves_4x5(b3_h, s3_h, e3_h, allow_double_and_ep=True).keys())
+    assert "b4c3" in hamm_moves_ply4
+    print(
+        "PASS mini4x5 mainline (1. d3 c3 2. Rd2 a3 3. b3 Ra4 -> 1qkr/rp1p/pPpP/P1PR/RQK1 w - -) "
+        "and ply-3 double-step / ply-4 en-passant rule divergence verified."
+    )
 
 
 # --- Independent SPEC.md 4x4 mini-rules engine, #cert v1 checker & LOOP.md expander ---
@@ -392,7 +611,9 @@ if __name__ == "__main__":
     check_assessment_word_count()
     check_recent_methods()
     check_transfer()
+    check_novelty_4x5()
     check_sources_table()
     check_links()
     check_mini4x4_cert()
+    check_4x5_rule_divergence_and_mainline()
     check_loop_strategy_expansion()

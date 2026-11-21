@@ -1,0 +1,3 @@
+board	sig	index_size	legal	wins	draws	losses	checkmates	stalemates	max_win_dtm	max_loss_dtm	gen_sec	table_bytes	max_win_fen
+8x8	KNKQ	30498048	21487864	8894128	2505048	10088688	16748	48	41	42	79.7872	91494144	8/8/8/8/8/2K5/2N5/kq6 b - -
+8x8	KNKR	30498048	23315984	5210952	16740224	1364808	9336	48	79	80	40.8696	91494144	4N3/8/3k4/7K/8/8/2r5/8 b - -

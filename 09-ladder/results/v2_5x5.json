@@ -1,0 +1,81 @@
+{
+  "class": "KPK",
+  "board": "5x5",
+  "mode": "all",
+  "sample": null,
+  "seed": null,
+  "total_tb": 12224,
+  "eval_roots": 12224,
+  "win": {
+    "nodes": 3438,
+    "bytes": 9842,
+    "claims_nodes": 2882,
+    "move_nodes": 3228,
+    "move_only_nodes": 550,
+    "true_total": 7666,
+    "claimed_true": 7464,
+    "certified": 7197,
+    "recall": 0.9388207670232194,
+    "false_claims": 0,
+    "missed_claims": 202,
+    "cert_entries": 6798,
+    "cert_bytes": 191378,
+    "max_rank": 22,
+    "verdicts": [
+      {
+        "checker": "mcheck2",
+        "valid": true,
+        "entries": 6798,
+        "max_rank": 22,
+        "seconds": 0.0584,
+        "detail": "VALID"
+      },
+      {
+        "checker": "mcheck.py",
+        "valid": true,
+        "entries": 6798,
+        "max_rank": 22,
+        "seconds": 1.1046,
+        "detail": "VALID"
+      }
+    ],
+    "claims_seconds": 2.152942658000029,
+    "expand_seconds": 4.951225795999562
+  },
+  "hold": {
+    "nodes": 2339,
+    "bytes": 6531,
+    "claims_nodes": 2034,
+    "move_nodes": 2243,
+    "move_only_nodes": 302,
+    "true_total": 4558,
+    "claimed_true": 3872,
+    "certified": 3456,
+    "recall": 0.7582272926722247,
+    "false_claims": 0,
+    "missed_claims": 686,
+    "cert_entries": 18992,
+    "cert_bytes": 524703,
+    "max_rank": 0,
+    "verdicts": [
+      {
+        "checker": "mcheck2",
+        "valid": true,
+        "entries": 18992,
+        "max_rank": 0,
+        "seconds": 0.2461,
+        "detail": "VALID"
+      },
+      {
+        "checker": "mcheck.py",
+        "valid": true,
+        "entries": 18992,
+        "max_rank": 0,
+        "seconds": 8.7221,
+        "detail": "VALID"
+      }
+    ],
+    "claims_seconds": 2.4561869699991803,
+    "expand_seconds": 14.864785703000962
+  }
+}

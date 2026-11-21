@@ -217,6 +217,48 @@ void test_generate_verify_and_cert() {
     std::filesystem::remove_all(tmp_dir);
 }
 
+void test_8x8_kpkp_ep_indexer() {
+    auto sig = tb::MaterialSig::parse("KPKP");
+    check(sig.has_value(), "parse KPKP");
+    tb::TableIndexer idxr(8, 8, *sig);
+
+    uint32_t base_n = idxr.base_size();
+    uint32_t total_n = idxr.size();
+    check(total_n > base_n, "8x8 KPKP must index en passant extra states");
+
+    // Check bijection on ALL extra (EP) states
+    for (uint32_t i = base_n; i < total_n; ++i) {
+        tb::RawState st;
+        idxr.decode_raw(i, st);
+        check(st.ep_sq != mchess::NO_SQ, "extra state in KPKP must have ep_sq");
+        check(st.castling == 0, "extra state in KPKP must have no castling");
+        check(idxr.encode_raw(st) == i, "encode_raw(decode_raw) mismatch on KPKP EP state");
+
+        mchess::Position pos;
+        check(idxr.decode_position(i, pos), "KPKP EP state must decode to valid Position");
+        check(pos.ep_square() == st.ep_sq, "KPKP EP square preserved");
+        check(idxr.encode_position(pos) == i, "encode_position mismatch on KPKP EP state");
+    }
+
+    // Also verify a specific legal EP position encodes and decodes properly, and its quiet
+    // predecessor (the double pawn push) reaches it and vice-versa.
+    mchess::Position ep_pos;
+    check(mchess::Position::parse("4k3/8/8/3pP3/8/8/8/4K3 w - d6", ep_pos), "parse d6 EP pos");
+    uint32_t ep_idx = idxr.encode_position(ep_pos);
+    check(ep_idx != UINT32_MAX && ep_idx >= base_n, "encode d6 EP pos");
+
+    std::vector<uint8_t> dummy_wdl(total_n, tb::WDL_UNKNOWN);
+    auto preds = tb::collect_quiet_predecessors(idxr, ep_idx, dummy_wdl);
+    mchess::Position pre_pos;
+    check(mchess::Position::parse("4k3/3p4/8/4P3/8/8/8/4K3 b - -", pre_pos), "parse d7d5 predecessor");
+    uint32_t pre_idx = idxr.encode_position(pre_pos);
+    check(std::find(preds.begin(), preds.end(), pre_idx) != preds.end(),
+          "double pawn push predecessor must reach EP state");
+
+    std::cout << "[PASS] test_8x8_kpkp_ep_indexer (base=" << base_n
+              << ", ep_extra=" << (total_n - base_n) << ")\n";
+}
+
 } // namespace
 
 int main() {
@@ -238,6 +280,7 @@ int main() {
     test_unmove_matches_forward(8, 8, "KRK");
 
     test_generate_verify_and_cert();
+    test_8x8_kpkp_ep_indexer();
 
     std::cout << "ALL TESTS PASSED\n";
     return 0;

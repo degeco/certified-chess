@@ -225,6 +225,31 @@ Whole-class reference totals for White-to-move valid positions:
 
 ---
 
-## Round 3 (LIA potential, witness rule, and Z3 proof)
+## Round 3 (LIA potential, witness rule, and Z3 proof for all `W >= 4, H >= 4`)
 
-*(Entries will be appended after each step.)*
+### Step 1: LIA Linter (`harness.py lint-lia`) and `strategies/kqk_lia.py` (v1)
+
+- Implemented `harness.py lint-lia <program> [--fn _pot]` checking AST compliance with Linear Integer Arithmetic (rejecting `var * var`, loops/comprehensions/`sum`, division/modulo by variables, and `rules` move generation; allowing `+`, `-`, comparisons, `min`, `max`, `abs`, constant-scaled multiplication, floor-div/mod by a non-zero integer constant, `if`/`else`, tuples, and board-index coordinate extraction).
+- Confirmed rejection of Round 2 programs: `kqk_v7.py` fails on `bw * bh` and `sum(1 for f in range(...) ...)`; `krk_v21.py` fails on `(rr - br) * dr`, `(eff_bh + 1) * dr`, and `(kr - (cr + eff_bh * dr)) * dr`.
+- **v1 (`strategies/kqk_lia.py`, `_pot` + `move` only, 1,165 AST nodes / 2,774 B)**:
+  - *Idea*: Replace `area = bw * bh` with half-perimeter `bw + bh` (with `(bw + bh, min(bw, bh))`), and replace the `fr` loop with closed-form LIA interval arithmetic (`_sfree` for 1-wide strips; constant-offset `_far` checks for 2x2, 2x3, 3x2 boxes).
+  - *Results*: `lint-lia` `LIA_OK`; `kqk` 1000-root score **1000/1000** (19,798 entries, max rank 17, 16.99 entries/node); whole-class **812/812** on 4x4 (`mcheck` VALID, 940/940 strict), **4,976/4,976** on 5x5 (`mcheck` VALID, 7,740/7,740 strict), **19,360/19,360** on 6x6 (`mcheck2` VALID, 34,904/34,904 strict).
+
+### Steps 2 & 3: Witness Rule (`hint`), `audit-hint`, and Z3 Counterexample-Guided Refinement (`smt/kqk.py`)
+
+- Implemented `harness.py audit-hint <program> --material <M> --board <WxH>` verifying over every valid position that `hint` is legal, never stalemates, and either mates in 1 or strictly decreases `_pot` on every legal Black reply.
+- Built `smt/kqk.py` encoding SPEC v1.2 position validity, White move legality, all 8 Black king replies (including capturing an undefended Queen), `_pot_lia`, and an explicit finite list of symbolic LIA candidate moves (no board loops).
+- **Counterexamples discovered by Z3 for arbitrary `W >= 4, H >= 4` (all invisible on 4x4..6x6 and 1000-root 4x4..8x8)**:
+  1. `w=10, h=4, K=(1,2), Q=(5,1), k=(3,0)`: With `bh == 1` and constant King target `(1, 2)`, `K` stalled at `(1, 2)` while `Q` at `(5, 1)` could neither shrink to `(4, 1)` (undefended) nor flip without expanding `bw` from `5` to `7`. **Fix**: change King target on 1-wide strips from constant `(2, 1)`/`(1, 2)` to `(2, nqr - 1)`/`(nqf - 1, 2)` (still independent of `k`'s reply, so `K` walks beside `Q` to support the shrink/mate on arbitrarily wide boards).
+  2. `w=8, h=26, K=(5,10), Q=(6,10), k=(0,9)`: `K` stood on `Q`'s rank `10` blocking `Q`'s horizontal cut, so `k` could step onto rank `10`, yet `_pot_lia` treated `bh = 10` as already sealed. **Fix**: add `v_brk` and `h_brk` (when `K` breaks `Q`'s seal adjacent to `k`, treat that box dimension as unsealed `w` or `h`).
+  3. `w=12, h=11, K=(0,2), Q=(2,5), k=(0,4)` and transpose `w=17, h=14, K=(5,0), Q=(8,2), k=(7,0)`: needed 1-square diagonal Queen moves `(nqf - 1, nqr + 1)` and `(nqf + 1, nqr - 1)` keeping `bw + bh` constant while dropping `min(bw, bh)` from `2` to `1`.
+  4. `w=16, h=10, K=(5,9), Q=(9,9), k=(7,8)`: needed edge-flip Queen moves `(nqf, nbr - 1)` and `(nbf - 1, nqr)` when `k` is near the far board edge.
+  5. `w=12, h=4, K=(2,0), Q=(5,2), k=(4,0)`: `k_edge` ahead of `bw + bh` blocked `Q -> (6, 1)` from dropping `min(bw, bh)` from `2` to `1` whenever `K` happened to sit on rank `0`, leaving no decreasing move because `K -> (2, 1)` stalemated. **Fix**: order `k_edge` immediately after `(bw + bh, min(bw, bh))`.
+  6. `w=34, h=15, K=(16,5), Q=(17,6), k=(0,5)`: `v_brk`/`h_brk` must require `nbf == nqf - 1` (resp. `nbr == nqr - 1`), otherwise a distant `K` on file `nqf` falsely unsealed a box `k` could not reach.
+  7. `w=5, h=17, K=(0,3), Q=(2,6), k=(0,5)` and transpose `w=21, h=4, K=(6,0), Q=(9,2), k=(8,0)`: a genuine stalemate-trap pattern on `2 x bh` (`bh >= 4`) strips where `K` near `(1, bh - 2)` traps `k` at `(0, bh - 1)` against `Q = (2, bh)`. **Fix**: add `trap_2g` / `trap_g2` (scoped to `nbr >= bh - 2` / `nbf >= bw - 2`, which Z3 confirmed is invariant under Black replies after fixing counterexamples `w=24, h=28` and `w=8, h=4`).
+- **Final `strategies/kqk_lia.py`** (1,477 AST nodes / 3,520 B for `_pot` + `move`; 5,309 AST nodes / 10,800 B including LIA `hint` + witness verifier):
+  - `lint-lia` `LIA_OK` on both `_pot` and `hint`.
+  - `audit-hint`: **0 violations** on 4x4 (812 pos, 1,216 steps), 5x5 (4,976 pos, 10,946 steps), and 6x6 (19,360 pos, 56,364 steps).
+  - Whole-class `expand-all` + `audit-rank`: **812/812** on 4x4 (920/920 strict, `mcheck` VALID), **4,976/4,976** on 5x5 (7,620/7,620 strict, `mcheck` VALID), **19,360/19,360** on 6x6 (34,396/34,396 strict, `mcheck2` VALID).
+  - Z3 encoding validation on 4x4, 5x5, 6x6: **0 mismatches** across 48,032 states and 384,256 Black-reply direction checks.
+  - Z3 symbolic proof for all `W >= 4, H >= 4`: lower bound `unsat` (0.37s), 13-case partition exhaustiveness `unsat` (0.03s), and **all 52/52 `(quadrant, case)` obligations across all 4 quadrants (`00`, `10`, `01`, `11`) returned `unsat` (`PROVEN_UNSAT`)** — quadrant `00`: 13/13 `unsat` (77.23s); quadrants `10, 01, 11`: 35/39 `unsat` at 55s cap + remaining 4/4 `unsat` at 150s cap (85.09s). Zero `sat`, zero `unknown`.

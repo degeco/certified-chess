@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <random>
 #include <sstream>
 #include <string>
@@ -17,10 +18,13 @@ namespace {
 void print_usage() {
     std::cerr
         << "Usage:\n"
-        << "  tbgen build <WxH> <SIG> [--db-dir DIR]\n"
+        << "  tbgen build <WxH> <SIG...> [--verify] [--db-dir DIR]\n"
         << "  tbgen build-all <WxH> [--max-pieces N] [--verify] [--db-dir DIR]\n"
         << "  tbgen dump <WxH> <SIG> [--db-dir DIR]\n"
-        << "  tbgen verify <WxH> <SIG> [--db-dir DIR]\n"
+        << "  tbgen verify <WxH> <SIG...> [--db-dir DIR]\n"
+        << "  tbgen probe <WxH> [--db-dir DIR]\n"
+        << "  tbgen sample <WxH> <SIG> --value <W|D|L> --stm <w|b> [--n N] [--seed S] [--db-dir DIR]\n"
+        << "  tbgen stats <WxH> <SIG...> [--no-header] [--db-dir DIR]\n"
         << "  tbgen cert \"<FEN>\" [--out-prefix PREFIX] [--db-dir DIR]\n"
         << "  tbgen h1 <WxH> [--max-pieces N | --sig SIG] [--samples N] [--seed S]\n"
         << "           [--out-tsv PATH] [--cert-dir DIR] [--cert-limit N] [--db-dir DIR]\n";
@@ -69,25 +73,45 @@ int cmd_build(int argc, char** argv) {
         std::cerr << "Invalid board size: " << argv[2] << "\n";
         return 1;
     }
-    auto sig = tb::MaterialSig::parse(argv[3]);
-    if (!sig) {
-        std::cerr << "Invalid signature: " << argv[3] << "\n";
-        return 1;
-    }
+    std::vector<tb::MaterialSig> sigs;
+    bool do_verify = false;
     std::string db_dir = "data";
-    for (int i = 4; i < argc; ++i) {
-        if (std::string(argv[i]) == "--db-dir" && i + 1 < argc) {
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--db-dir" && i + 1 < argc) {
             db_dir = argv[++i];
-        } else {
-            std::cerr << "Unknown arg: " << argv[i] << "\n";
+        } else if (arg == "--verify") {
+            do_verify = true;
+        } else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Unknown arg: " << arg << "\n";
             return 1;
+        } else {
+            auto sig = tb::MaterialSig::parse(arg);
+            if (!sig) {
+                std::cerr << "Invalid signature: " << arg << "\n";
+                return 1;
+            }
+            sigs.push_back(*sig);
         }
     }
+    if (sigs.empty()) {
+        std::cerr << "No signatures provided\n";
+        return 1;
+    }
 
-    tb::TableStore store(db_dir);
-    const tb::Tablebase& tbl = store.ensure(w, h, *sig, true);
     print_stats_header();
-    print_stats_row(tbl.compute_stats());
+    for (const auto& sig : sigs) {
+        tb::TableStore store(db_dir);
+        const tb::Tablebase& tbl = store.ensure(w, h, sig, true, false);
+        if (do_verify) {
+            std::string err;
+            if (!store.verify(w, h, sig, &err)) {
+                std::cerr << "VERIFY FAILED: " << err << "\n";
+                return 1;
+            }
+        }
+        print_stats_row(tbl.compute_stats());
+    }
     return 0;
 }
 
@@ -186,13 +210,53 @@ int cmd_verify(int argc, char** argv) {
         std::cerr << "Invalid board size: " << argv[2] << "\n";
         return 1;
     }
-    auto sig = tb::MaterialSig::parse(argv[3]);
-    if (!sig) {
-        std::cerr << "Invalid signature: " << argv[3] << "\n";
+    std::vector<tb::MaterialSig> sigs;
+    std::string db_dir = "data";
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--db-dir" && i + 1 < argc) {
+            db_dir = argv[++i];
+        } else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Unknown arg: " << arg << "\n";
+            return 1;
+        } else {
+            auto sig = tb::MaterialSig::parse(arg);
+            if (!sig) {
+                std::cerr << "Invalid signature: " << arg << "\n";
+                return 1;
+            }
+            sigs.push_back(*sig);
+        }
+    }
+    if (sigs.empty()) {
+        std::cerr << "No signatures provided\n";
+        return 1;
+    }
+
+    for (const auto& sig : sigs) {
+        tb::TableStore store(db_dir);
+        std::string err;
+        if (!store.verify(w, h, sig, &err)) {
+            std::cerr << "INVALID: " << err << "\n";
+            return 1;
+        }
+        std::cout << "VERIFIED " << w << "x" << h << " " << sig.to_string() << "\n";
+    }
+    return 0;
+}
+
+int cmd_probe(int argc, char** argv) {
+    if (argc < 3) {
+        print_usage();
+        return 1;
+    }
+    int w = 0, h = 0;
+    if (!tb::parse_board_size(argv[2], w, h)) {
+        std::cerr << "Invalid board size: " << argv[2] << "\n";
         return 1;
     }
     std::string db_dir = "data";
-    for (int i = 4; i < argc; ++i) {
+    for (int i = 3; i < argc; ++i) {
         if (std::string(argv[i]) == "--db-dir" && i + 1 < argc) {
             db_dir = argv[++i];
         } else {
@@ -201,13 +265,282 @@ int cmd_verify(int argc, char** argv) {
         }
     }
 
+    std::ios::sync_with_stdio(false);
+    std::cin.tie(nullptr);
+
     tb::TableStore store(db_dir);
-    std::string err;
-    if (!store.verify(w, h, *sig, &err)) {
-        std::cerr << "INVALID: " << err << "\n";
+    std::map<tb::MaterialSig, std::unique_ptr<tb::Tablebase>> cache;
+
+    std::string line;
+    std::string out_buf;
+    out_buf.reserve(1 << 20);
+
+    auto flush_buf = [&]() {
+        if (!out_buf.empty()) {
+            std::cout.write(out_buf.data(), static_cast<std::streamsize>(out_buf.size()));
+            out_buf.clear();
+        }
+    };
+
+    while (std::getline(std::cin, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+
+        mchess::Position pos;
+        if (!mchess::Position::parse(line, pos) || pos.width() != w || pos.height() != h) {
+            out_buf += line;
+            out_buf += "\t?\t0\n";
+        } else {
+            tb::MaterialSig sig = tb::MaterialSig::from_position(pos);
+            auto it = cache.find(sig);
+            if (it == cache.end()) {
+                std::string path = store.db_path(w, h, sig);
+                std::unique_ptr<tb::Tablebase> loaded;
+                if (std::filesystem::exists(path)) {
+                    loaded = tb::Tablebase::load(path);
+                }
+                it = cache.emplace(sig, std::move(loaded)).first;
+            }
+            const tb::Tablebase* tbl = it->second.get();
+            std::string fen = pos.to_fen();
+            if (!tbl) {
+                out_buf += fen;
+                out_buf += "\t?\t0\n";
+            } else {
+                uint32_t idx = tbl->indexer->encode_position(pos);
+                if (idx == UINT32_MAX || tbl->wdl[idx] == tb::WDL_ILLEGAL) {
+                    out_buf += fen;
+                    out_buf += "\t?\t0\n";
+                } else {
+                    uint8_t v = tbl->wdl[idx];
+                    char vc = (v == tb::WDL_WIN) ? 'W' : (v == tb::WDL_LOSS ? 'L' : 'D');
+                    uint16_t d = (v == tb::WDL_DRAW) ? 0 : tbl->dtm[idx];
+                    out_buf += fen;
+                    out_buf.push_back('\t');
+                    out_buf.push_back(vc);
+                    out_buf.push_back('\t');
+                    out_buf += std::to_string(d);
+                    out_buf.push_back('\n');
+                }
+            }
+        }
+        if (out_buf.size() >= (1 << 20)) flush_buf();
+    }
+    flush_buf();
+    return 0;
+}
+
+int cmd_sample(int argc, char** argv) {
+    if (argc < 4) {
+        print_usage();
         return 1;
     }
-    std::cout << "VERIFIED " << w << "x" << h << " " << sig->to_string() << "\n";
+    int w = 0, h = 0;
+    if (!tb::parse_board_size(argv[2], w, h)) {
+        std::cerr << "Invalid board size: " << argv[2] << "\n";
+        return 1;
+    }
+    auto sig = tb::MaterialSig::parse(argv[3]);
+    if (!sig) {
+        std::cerr << "Invalid signature: " << argv[3] << "\n";
+        return 1;
+    }
+
+    char target_val = '\0';
+    int target_stm = -1;
+    size_t n_samples = 1000;
+    uint64_t seed = 20261121ULL;
+    std::string db_dir = "data";
+
+    for (int i = 4; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--value" && i + 1 < argc) {
+            std::string v = argv[++i];
+            if (v == "W" || v == "D" || v == "L") target_val = v[0];
+            else {
+                std::cerr << "Invalid --value: " << v << " (expected W, D, or L)\n";
+                return 1;
+            }
+        } else if (arg == "--stm" && i + 1 < argc) {
+            std::string s = argv[++i];
+            if (s == "w") target_stm = 0;
+            else if (s == "b") target_stm = 1;
+            else {
+                std::cerr << "Invalid --stm: " << s << " (expected w or b)\n";
+                return 1;
+            }
+        } else if (arg == "--n" && i + 1 < argc) {
+            n_samples = std::stoull(argv[++i]);
+        } else if (arg == "--seed" && i + 1 < argc) {
+            seed = std::stoull(argv[++i]);
+        } else if (arg == "--db-dir" && i + 1 < argc) {
+            db_dir = argv[++i];
+        } else {
+            std::cerr << "Unknown arg: " << arg << "\n";
+            return 1;
+        }
+    }
+
+    if (target_val == '\0' || target_stm == -1) {
+        std::cerr << "--value <W|D|L> and --stm <w|b> are required\n";
+        return 1;
+    }
+
+    uint8_t target_wdl = (target_val == 'W') ? tb::WDL_WIN
+                         : (target_val == 'L' ? tb::WDL_LOSS : tb::WDL_DRAW);
+
+    tb::TableStore store(db_dir);
+    std::string path = store.db_path(w, h, *sig);
+    std::unique_ptr<tb::Tablebase> loaded;
+    const tb::Tablebase* tbl = nullptr;
+    if (std::filesystem::exists(path)) {
+        loaded = tb::Tablebase::load(path);
+        tbl = loaded.get();
+    }
+    if (!tbl) {
+        tbl = &store.ensure(w, h, *sig, true, false);
+    }
+
+    // Indices [0 .. base_size_ - 1] have castling == 0 and ep == NO_SQ, with stm == (idx & 1).
+    const uint32_t base_n = tbl->indexer->base_size();
+    std::vector<uint32_t> pool;
+    for (uint32_t idx = static_cast<uint32_t>(target_stm); idx < base_n; idx += 2) {
+        if (tbl->wdl[idx] == target_wdl) {
+            pool.push_back(idx);
+        }
+    }
+
+    size_t k = std::min(n_samples, pool.size());
+    std::mt19937_64 rng(seed);
+    for (size_t i = 0; i < k; ++i) {
+        std::uniform_int_distribution<size_t> dist(i, pool.size() - 1);
+        std::swap(pool[i], pool[dist(rng)]);
+    }
+
+    std::ios::sync_with_stdio(false);
+    for (size_t i = 0; i < k; ++i) {
+        uint32_t idx = pool[i];
+        mchess::Position pos;
+        if (!tbl->indexer->decode_position(idx, pos)) continue;
+        uint16_t d = (target_wdl == tb::WDL_DRAW) ? 0 : tbl->dtm[idx];
+        std::cout << pos.to_fen() << "\t" << target_val << "\t" << d << "\n";
+    }
+    return 0;
+}
+
+int cmd_stats(int argc, char** argv) {
+    if (argc < 4) {
+        print_usage();
+        return 1;
+    }
+    int w = 0, h = 0;
+    if (!tb::parse_board_size(argv[2], w, h)) {
+        std::cerr << "Invalid board size: " << argv[2] << "\n";
+        return 1;
+    }
+    std::vector<tb::MaterialSig> sigs;
+    bool no_header = false;
+    std::string db_dir = "data";
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--db-dir" && i + 1 < argc) {
+            db_dir = argv[++i];
+        } else if (arg == "--no-header") {
+            no_header = true;
+        } else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Unknown arg: " << arg << "\n";
+            return 1;
+        } else {
+            auto sig = tb::MaterialSig::parse(arg);
+            if (!sig) {
+                std::cerr << "Invalid signature: " << arg << "\n";
+                return 1;
+            }
+            sigs.push_back(*sig);
+        }
+    }
+    if (sigs.empty()) {
+        std::cerr << "No signatures provided\n";
+        return 1;
+    }
+
+    if (!no_header) {
+        std::cout << "board\tsig\tstm\tvalid\twins\tdraws\tlosses\tmax_win_dtm\tmax_win_fen\tmax_loss_dtm\tmax_loss_fen\n";
+    }
+
+    tb::TableStore store(db_dir);
+    for (const auto& sig : sigs) {
+        std::string path = store.db_path(w, h, sig);
+        auto tbl = tb::Tablebase::load(path);
+        if (!tbl) {
+            std::cerr << "Missing table: " << path << "\n";
+            return 1;
+        }
+
+        uint64_t valid[2] = {0, 0};
+        uint64_t wins[2] = {0, 0};
+        uint64_t draws[2] = {0, 0};
+        uint64_t losses[2] = {0, 0};
+        uint16_t max_w_dtm[2] = {0, 0};
+        uint16_t max_l_dtm[2] = {0, 0};
+        uint32_t max_w_idx[2] = {UINT32_MAX, UINT32_MAX};
+        uint32_t max_l_idx[2] = {UINT32_MAX, UINT32_MAX};
+
+        const uint32_t N = tbl->indexer->size();
+        const uint32_t base_n = tbl->indexer->base_size();
+        for (uint32_t idx = 0; idx < N; ++idx) {
+            uint8_t v = tbl->wdl[idx];
+            if (v == tb::WDL_ILLEGAL) continue;
+            int stm = 0;
+            if (idx < base_n) {
+                stm = static_cast<int>(idx & 1U);
+            } else {
+                tb::RawState st;
+                tbl->indexer->decode_raw(idx, st);
+                stm = static_cast<int>(st.stm);
+            }
+            ++valid[stm];
+            if (v == tb::WDL_WIN) {
+                ++wins[stm];
+                if (max_w_idx[stm] == UINT32_MAX || tbl->dtm[idx] > max_w_dtm[stm]) {
+                    max_w_dtm[stm] = tbl->dtm[idx];
+                    max_w_idx[stm] = idx;
+                }
+            } else if (v == tb::WDL_DRAW) {
+                ++draws[stm];
+            } else if (v == tb::WDL_LOSS) {
+                ++losses[stm];
+                if (max_l_idx[stm] == UINT32_MAX || tbl->dtm[idx] > max_l_dtm[stm]) {
+                    max_l_dtm[stm] = tbl->dtm[idx];
+                    max_l_idx[stm] = idx;
+                }
+            }
+        }
+
+        for (int stm = 0; stm < 2; ++stm) {
+            std::string w_fen = "-";
+            if (max_w_idx[stm] != UINT32_MAX) {
+                mchess::Position p;
+                if (tbl->indexer->decode_position(max_w_idx[stm], p)) w_fen = p.to_fen();
+            }
+            std::string l_fen = "-";
+            if (max_l_idx[stm] != UINT32_MAX) {
+                mchess::Position p;
+                if (tbl->indexer->decode_position(max_l_idx[stm], p)) l_fen = p.to_fen();
+            }
+            std::cout << w << "x" << h << "\t"
+                      << sig.to_string() << "\t"
+                      << (stm == 0 ? 'w' : 'b') << "\t"
+                      << valid[stm] << "\t"
+                      << wins[stm] << "\t"
+                      << draws[stm] << "\t"
+                      << losses[stm] << "\t"
+                      << max_w_dtm[stm] << "\t"
+                      << w_fen << "\t"
+                      << max_l_dtm[stm] << "\t"
+                      << l_fen << "\n";
+        }
+    }
     return 0;
 }
 
@@ -428,6 +761,9 @@ int main(int argc, char** argv) {
     if (cmd == "build-all") return cmd_build_all(argc, argv);
     if (cmd == "dump") return cmd_dump(argc, argv);
     if (cmd == "verify") return cmd_verify(argc, argv);
+    if (cmd == "probe") return cmd_probe(argc, argv);
+    if (cmd == "sample") return cmd_sample(argc, argv);
+    if (cmd == "stats") return cmd_stats(argc, argv);
     if (cmd == "cert") return cmd_cert(argc, argv);
     if (cmd == "h1") return cmd_h1(argc, argv);
 

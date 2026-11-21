@@ -149,3 +149,24 @@ From `3x3` to `5x5`, `WIN` certificate size relative to table size shrinks monot
 
 - A faster compiled (C++/Rust) SPEC v1.1 certificate checker or streaming verifier: `mcheck.py` in Python verifies ~3,500 small certificates in `16.6 s`, which will bottleneck when verifying large `ATLEAST_DRAW` certificates (>100k entries) on `5x5` or 5-piece tables.
 - A symmetry-reduced tablebase indexer (color/board reflection) if extending `4x4`/`5x5` to 5 pieces within the 4 GB RAM / 5-minute budget.
+
+## Round 3: 8x8 & 6x6 Piece Ladder Ground Truth
+
+### Engineering & Indexing Updates
+- **8x8 `KPKP` en passant indexing ([src/indexer.cpp](file:///home/dege/chess/04-tablebase/src/indexer.cpp)):** Separated castling cutoff (`base_size <= 5,000,000`) from en passant enumeration on `8x8`. When both sides have pawns and `base_size > 5,000,000`, `TableIndexer` pre-filters the pawn pair placement before iterating king/piece squares, enumerating all `87,572` valid en-passant states for `8x8 KPKP` (`17,064,384` base + `87,572` EP = `17,151,956` total indices) in milliseconds. Castling rights remain unindexed for `8x8` tables with `base_size > 5,000,000` (closed under forward moves since castling rights can only be lost).
+- **Performance & memory ([src/indexer.cpp](file:///home/dege/chess/04-tablebase/src/indexer.cpp), [src/tablebase.cpp](file:///home/dege/chess/04-tablebase/src/tablebase.cpp)):** Parallelized initialization and `verify` across up to 4 threads, added `select_nth_bit` and stack-buffer FEN formatting with `non_stm_in_check` prefilter, avoided loading grandchild tables during `build`/`verify`, and kept the `MCTBv001` `.tb` disk format unchanged for `05-solver` compatibility.
+- **New `tbgen` subcommands ([src/main.cpp](file:///home/dege/chess/04-tablebase/src/main.cpp)):** Added `probe <WxH>`, `sample <WxH> <SIG> --value <W|D|L> --stm <w|b> --n <N> --seed <S>`, and `stats <WxH> <SIG...>`.
+
+### Build Progress (In Progress)
+- **`make test`:** All 26 unit tests pass (including `test_8x8_kpkp_ep_indexer`).
+- **`6x6` tables:** All 39 ladder-closure signatures (`KK`, 10 3-piece, 28 4-piece + `KNNK`) built and verified via `tbgen build 6x6 ... --verify` in `2m1.4s` ([results/tables_6x6_ladder.tsv](file:///home/dege/chess/04-tablebase/results/tables_6x6_ladder.tsv)).
+- **`8x8` Batch 1:** `KK`, 10 3-piece (`KQK`, `KRK`, `KBK`, `KNK`, `KPK`, `KKQ`, `KKR`, `KKB`, `KKN`, `KKP`), `KBBK`, `KNNK` built and verified in `1m1.4s` ([results/tables_8x8_batch1.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch1.tsv)).
+- **`8x8` Batch 2:** `KBNK`, `KQKR` built and verified in `1m59.6s` ([results/tables_8x8_batch2.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch2.tsv)).
+- **`8x8` Batch 3:** `KRKB`, `KRKN`, `KRKQ` built and verified in `2m46.1s` ([results/tables_8x8_batch3.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch3.tsv)).
+- **`8x8` Batch 4:** `KQKQ`, `KQKB`, `KQKN` built and verified in `3m0.2s` ([results/tables_8x8_batch4.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch4.tsv)).
+- **`8x8` Batch 5:** `KRKR`, `KBKQ`, `KBKR` built and verified in `3m50.8s` ([results/tables_8x8_batch5.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch5.tsv)).
+- **`8x8` Batch 6:** `KBKB`, `KBKN`, `KNKB`, `KNKN` built and verified in `3m47.8s` ([results/tables_8x8_batch6.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch6.tsv)).
+- **`8x8` Batch 7:** `KNKQ`, `KNKR` built and verified in `4m31.3s` ([results/tables_8x8_batch7.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch7.tsv)).
+- **`8x8` Batch 8:** `KQKP`, `KRKP`, `KBKP` built and verified in `2m47.1s` ([results/tables_8x8_batch8.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch8.tsv)).
+- **`8x8` Batch 9:** `KNKP`, `KPKQ`, `KPKR` built and verified in `4m57.3s` ([results/tables_8x8_batch9.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch9.tsv)).
+- **`8x8` Batch 10:** `KPKB`, `KPKN` built and verified in `3m48.4s` ([results/tables_8x8_batch10.tsv](file:///home/dege/chess/04-tablebase/results/tables_8x8_batch10.tsv)).

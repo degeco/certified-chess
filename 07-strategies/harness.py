@@ -1642,6 +1642,524 @@ def audit_rank(
 
 
 # ---------------------------------------------------------------------------
+# LIA fragment linter (Round 3 Step 1: lint-lia)
+# ---------------------------------------------------------------------------
+
+LIA_ALLOWED_BUILTINS = frozenset({"min", "max", "abs", "int"})
+
+
+def _is_int_const_expr(node: ast.AST) -> bool:
+    """Return True if `node` is a constant integer expression (no variables)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _is_int_const_expr(node.operand)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod)):
+        return _is_int_const_expr(node.left) and _is_int_const_expr(node.right)
+    return False
+
+
+def _eval_int_const(node: ast.AST) -> int | None:
+    if not _is_int_const_expr(node):
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.UnaryOp):
+        v = _eval_int_const(node.operand)
+        if v is None:
+            return None
+        return v if isinstance(node.op, ast.UAdd) else -v
+    if isinstance(node, ast.BinOp):
+        lv = _eval_int_const(node.left)
+        rv = _eval_int_const(node.right)
+        if lv is None or rv is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return lv + rv
+        if isinstance(node.op, ast.Sub):
+            return lv - rv
+        if isinstance(node.op, ast.Mult):
+            return lv * rv
+        if rv == 0:
+            return None
+        if isinstance(node.op, ast.FloorDiv):
+            return lv // rv
+        if isinstance(node.op, ast.Mod):
+            return lv % rv
+    return None
+
+
+def _is_board_index_call(node: ast.AST) -> bool:
+    """Match `<pos>.board.index(<single-piece-str>)` for coordinate extraction."""
+    if not isinstance(node, ast.Call):
+        return False
+    if not (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "index"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "board"
+        and isinstance(node.func.value.value, ast.Name)
+    ):
+        return False
+    if len(node.args) != 1 or node.keywords:
+        return False
+    arg = node.args[0]
+    return isinstance(arg, ast.Constant) and isinstance(arg.value, str) and len(arg.value) == 1
+
+
+def _is_board_width_attr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "width"
+        and isinstance(node.value, ast.Name)
+    )
+
+
+def _is_pos_board_attr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "board"
+        and isinstance(node.value, ast.Name)
+    )
+
+
+def _is_square_name_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "square_name"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "rules"
+        and len(node.args) == 2
+        and not node.keywords
+    )
+
+
+def lint_lia(
+    program_path: Path,
+    *,
+    fn_name: str = "_pot",
+    allow_move_formatting: bool = False,
+) -> dict[str, object]:
+    """Check that `fn_name` (and any local helpers it calls) stays inside Linear Integer Arithmetic.
+
+    Allowed: +, -, comparisons, min, max, abs, integer constants, constant-scaled multiplication,
+    floor-div/mod by a non-zero integer constant, if/else, tuples, and piece-coordinate extraction
+    from `pos` (`pos.width`, `pos.height`, `pos.board.index(c)` with `i % pos.width`, `i // pos.width`,
+    and `<piece> in pos.board`).
+    Forbidden: variable*variable, loops, comprehensions/generators, division/mod by variables,
+    float division, powers, bitwise ops, lookup tables, or rules move-generation calls.
+    """
+    source = program_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(program_path))
+
+    func_defs: dict[str, ast.FunctionDef] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.FunctionDef):
+            func_defs[stmt.name] = stmt
+
+    if fn_name not in func_defs:
+        return {
+            "ok": False,
+            "program": str(program_path),
+            "fn": fn_name,
+            "checked_functions": [],
+            "violations": [f"function {fn_name!r} not found at module top level"],
+        }
+
+    violations: list[str] = []
+    checked: list[str] = []
+    visited: set[str] = set()
+
+    def add_err(fn: str, node: ast.AST, msg: str) -> None:
+        ln = getattr(node, "lineno", "?")
+        violations.append(f"{fn}:{ln}: {msg}")
+
+    def check_fn(name: str) -> None:
+        if name in visited:
+            return
+        visited.add(name)
+        checked.append(name)
+        fn = func_defs[name]
+
+        # Track variables bound directly to `<pos>.board.index(...)` (for 1D -> (f, r) unpack only).
+        board_idx_vars: set[str] = set()
+        # Allow string-typed piece param in a tiny coordinate helper like `def _f(p, c): i = p.board.index(c)`.
+        param_names = {a.arg for a in fn.args.args}
+
+        def is_coord_index_call(node: ast.AST) -> bool:
+            if _is_board_index_call(node):
+                return True
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "index"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "board"
+                and isinstance(node.func.value.value, ast.Name)
+                and len(node.args) == 1
+                and not node.keywords
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id in param_names
+            ):
+                return True
+            return False
+
+        def check_expr(node: ast.AST) -> None:
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, bool)):
+                    return
+                if isinstance(node.value, str) and len(node.value) == 1:
+                    return
+                add_err(name, node, f"non-integer constant {node.value!r} not allowed in LIA")
+                return
+            if isinstance(node, ast.Name):
+                return
+            if isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name) and node.attr in ("width", "height", "board"):
+                    return
+                add_err(name, node, f"attribute access .{node.attr} not allowed in LIA")
+                return
+            if isinstance(node, ast.UnaryOp):
+                if isinstance(node.op, (ast.UAdd, ast.USub, ast.Not)):
+                    check_expr(node.operand)
+                    return
+                add_err(name, node, f"unary operator {type(node.op).__name__} not allowed in LIA")
+                return
+            if isinstance(node, ast.BoolOp):
+                for v in node.values:
+                    check_expr(v)
+                return
+            if isinstance(node, ast.Compare):
+                check_expr(node.left)
+                for op, comp in zip(node.ops, node.comparators):
+                    if isinstance(op, (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                        check_expr(comp)
+                    elif isinstance(op, (ast.In, ast.NotIn)):
+                        if not (
+                            isinstance(node.left, ast.Constant)
+                            and isinstance(node.left.value, str)
+                            and _is_pos_board_attr(comp)
+                        ):
+                            add_err(name, node, "'in'/'not in' only allowed for piece presence in pos.board")
+                    else:
+                        add_err(name, node, f"comparison {type(op).__name__} not allowed in LIA")
+                return
+            if isinstance(node, ast.IfExp):
+                check_expr(node.test)
+                check_expr(node.body)
+                check_expr(node.orelse)
+                return
+            if isinstance(node, ast.Tuple):
+                for elt in node.elts:
+                    check_expr(elt)
+                return
+            if isinstance(node, ast.BinOp):
+                if isinstance(node.op, (ast.Add, ast.Sub)):
+                    check_expr(node.left)
+                    check_expr(node.right)
+                    return
+                if isinstance(node.op, ast.Mult):
+                    if _is_int_const_expr(node.left) or _is_int_const_expr(node.right):
+                        check_expr(node.left)
+                        check_expr(node.right)
+                        return
+                    add_err(
+                        name,
+                        node,
+                        f"non-linear multiplication of two variables: {ast.unparse(node)}",
+                    )
+                    return
+                if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
+                    # Allow constant non-zero divisor (Presburger/LIA definable)
+                    rv = _eval_int_const(node.right)
+                    if rv is not None and rv != 0:
+                        check_expr(node.left)
+                        return
+                    # Allow coordinate unpacking `i % p.width` / `i // p.width`
+                    if (
+                        isinstance(node.left, ast.Name)
+                        and node.left.id in board_idx_vars
+                        and _is_board_width_attr(node.right)
+                    ):
+                        return
+                    add_err(
+                        name,
+                        node,
+                        f"division/modulo by non-constant expression: {ast.unparse(node)}",
+                    )
+                    return
+                add_err(name, node, f"operator {type(node.op).__name__} not allowed in LIA ({ast.unparse(node)})")
+                return
+            if isinstance(node, ast.Call):
+                if is_coord_index_call(node):
+                    return
+                if allow_move_formatting and _is_square_name_call(node):
+                    for a in node.args:
+                        check_expr(a)
+                    return
+                if isinstance(node.func, ast.Name):
+                    cname = node.func.id
+                    if cname in LIA_ALLOWED_BUILTINS:
+                        if node.keywords:
+                            add_err(name, node, f"keyword args not allowed in {cname}()")
+                        for a in node.args:
+                            check_expr(a)
+                        return
+                    if cname in func_defs:
+                        if node.keywords:
+                            add_err(name, node, f"keyword args not allowed in {cname}()")
+                        for a in node.args:
+                            check_expr(a)
+                        check_fn(cname)
+                        return
+                add_err(name, node, f"disallowed call in LIA: {ast.unparse(node)}")
+                return
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                add_err(name, node, f"comprehension/generator not allowed in LIA: {ast.unparse(node)}")
+                return
+            add_err(name, node, f"disallowed expression {type(node).__name__} in LIA: {ast.unparse(node)}")
+
+        def check_target(tgt: ast.AST) -> None:
+            if isinstance(tgt, ast.Name):
+                return
+            if isinstance(tgt, ast.Tuple):
+                for elt in tgt.elts:
+                    check_target(elt)
+                return
+            add_err(name, tgt, f"disallowed assignment target {type(tgt).__name__} in LIA")
+
+        def check_stmts(stmts: list[ast.stmt]) -> None:
+            for idx, stmt in enumerate(stmts):
+                if (
+                    idx == 0
+                    and isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)
+                ):
+                    continue  # docstring
+                if isinstance(stmt, ast.Assign):
+                    if len(stmt.targets) != 1:
+                        add_err(name, stmt, "chained assignment not allowed in LIA")
+                        continue
+                    tgt = stmt.targets[0]
+                    check_target(tgt)
+                    if isinstance(tgt, ast.Name) and is_coord_index_call(stmt.value):
+                        board_idx_vars.add(tgt.id)
+                        continue
+                    check_expr(stmt.value)
+                    continue
+                if isinstance(stmt, ast.AugAssign):
+                    if not isinstance(stmt.op, (ast.Add, ast.Sub)):
+                        add_err(name, stmt, f"augmented assign {type(stmt.op).__name__} not allowed in LIA")
+                    check_target(stmt.target)
+                    check_expr(stmt.value)
+                    continue
+                if isinstance(stmt, ast.If):
+                    check_expr(stmt.test)
+                    check_stmts(stmt.body)
+                    check_stmts(stmt.orelse)
+                    continue
+                if isinstance(stmt, ast.Return):
+                    if stmt.value is not None:
+                        check_expr(stmt.value)
+                    continue
+                if isinstance(stmt, ast.Pass):
+                    continue
+                if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                    add_err(name, stmt, f"loop ({type(stmt).__name__}) not allowed in LIA")
+                    continue
+                add_err(name, stmt, f"disallowed statement {type(stmt).__name__} in LIA")
+
+        check_stmts(fn.body)
+
+    check_fn(fn_name)
+    return {
+        "ok": len(violations) == 0,
+        "program": str(program_path),
+        "fn": fn_name,
+        "checked_functions": checked,
+        "violations": violations,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Witness-move audit (Round 3 Step 2: audit-hint)
+# ---------------------------------------------------------------------------
+
+_WORKER_HINT_FN: Callable[[rules.Position], str] | None = None
+
+
+def _init_hint_worker(program_path_str: str, pot_fn_name: str, hint_fn_name: str) -> None:
+    global _WORKER_POT_FN, _WORKER_HINT_FN
+    ns, _, _, _ = load_strategy_namespace(
+        Path(program_path_str), length_limit=None, enforce_lookahead=False
+    )
+    pfn = ns.get(pot_fn_name)
+    hfn = ns.get(hint_fn_name)
+    if not callable(pfn):
+        raise ValueError(f"program {program_path_str} has no callable {pot_fn_name}()")
+    if not callable(hfn):
+        raise ValueError(f"program {program_path_str} has no callable {hint_fn_name}()")
+    _WORKER_POT_FN = pfn  # type: ignore[assignment]
+    _WORKER_HINT_FN = hfn  # type: ignore[assignment]
+
+
+def _audit_hint_batch(
+    fens: list[str],
+) -> tuple[int, int, int, int, int, int, int, int, list[tuple[str, ...]]]:
+    assert _WORKER_POT_FN is not None and _WORKER_HINT_FN is not None
+    total = 0
+    mate1 = 0
+    illegal = 0
+    stalemate = 0
+    dec_n = 0
+    eq_n = 0
+    inc_n = 0
+    cap_n = 0
+    samples: list[tuple[str, ...]] = []
+
+    for fen in fens:
+        total += 1
+        pos = rules.parse_position(fen)
+        trans = rules.legal_transitions(pos)
+        trans_dict = dict(trans)
+        try:
+            m_str = _WORKER_HINT_FN(pos)
+        except Exception as exc:
+            illegal += 1
+            if len(samples) < 10:
+                samples.append(("error", fen, "", "", f"{type(exc).__name__}: {exc}"))
+            continue
+        if not isinstance(m_str, str) or m_str not in trans_dict:
+            illegal += 1
+            if len(samples) < 10:
+                samples.append(("illegal", fen, repr(m_str), "", "not a legal move"))
+            continue
+        q_pos = trans_dict[m_str]
+        replies = rules.legal_transitions(q_pos)
+        if not replies:
+            if rules.in_check(q_pos):
+                mate1 += 1
+            else:
+                stalemate += 1
+                if len(samples) < 10:
+                    samples.append(("stalemate", fen, m_str, "", "leads to stalemate"))
+            continue
+
+        pot_p = _WORKER_POT_FN(pos)
+        orig_pieces = sum(1 for c in pos.board if c != ".")
+        for r_move, r_pos in replies:
+            if sum(1 for c in r_pos.board if c != ".") < orig_pieces:
+                cap_n += 1
+            pot_r = _WORKER_POT_FN(r_pos)
+            if pot_r < pot_p:  # type: ignore[operator]
+                dec_n += 1
+            elif pot_r == pot_p:
+                eq_n += 1
+                if len(samples) < 10:
+                    samples.append(
+                        ("equal", fen, m_str, r_move, f"{r_pos.to_fen()} | {pot_p!r} == {pot_r!r}")
+                    )
+            else:
+                inc_n += 1
+                if len(samples) < 10:
+                    samples.append(
+                        ("increase", fen, m_str, r_move, f"{r_pos.to_fen()} | {pot_p!r} -> {pot_r!r}")
+                    )
+    return total, mate1, illegal, stalemate, dec_n, eq_n, inc_n, cap_n, samples
+
+
+def audit_hint(
+    program_path: Path,
+    material: str,
+    width: int,
+    height: int,
+    *,
+    pot_fn_name: str = "_pot",
+    hint_fn_name: str = "hint",
+    jobs: int = 4,
+) -> dict[str, object]:
+    """Audit `hint(pos)` over every valid White-to-move position of (material, WxH)."""
+    t0 = time.perf_counter()
+    ns, _, length_bytes, length_nodes = load_strategy_namespace(
+        program_path, length_limit=None, enforce_lookahead=False
+    )
+    pot_fn = ns.get(pot_fn_name)
+    hint_fn = ns.get(hint_fn_name)
+    if not callable(pot_fn):
+        raise ValueError(f"program {program_path} has no callable {pot_fn_name}()")
+    if not callable(hint_fn):
+        raise ValueError(f"program {program_path} has no callable {hint_fn_name}()")
+
+    valid_fens = enumerate_valid_positions(material, width, height)
+    workers = max(1, min(4, jobs))
+    chunk_size = max(1, min(500, (len(valid_fens) + workers * 4 - 1) // (workers * 4)))
+    batches = [valid_fens[i : i + chunk_size] for i in range(0, len(valid_fens), chunk_size)]
+
+    total = mate1 = illegal = stalemate = dec_n = eq_n = inc_n = cap_n = 0
+    samples: list[tuple[str, ...]] = []
+
+    if workers == 1 or len(batches) <= 1:
+        global _WORKER_POT_FN, _WORKER_HINT_FN
+        _WORKER_POT_FN = pot_fn  # type: ignore[assignment]
+        _WORKER_HINT_FN = hint_fn  # type: ignore[assignment]
+        for b in batches:
+            t, m1, il, sm, d, eq, inc, cap, smp = _audit_hint_batch(b)
+            total += t
+            mate1 += m1
+            illegal += il
+            stalemate += sm
+            dec_n += d
+            eq_n += eq
+            inc_n += inc
+            cap_n += cap
+            for s in smp:
+                if len(samples) < 10:
+                    samples.append(s)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_hint_worker,
+            initargs=(str(program_path.resolve()), pot_fn_name, hint_fn_name),
+        ) as pool:
+            for t, m1, il, sm, d, eq, inc, cap, smp in pool.map(_audit_hint_batch, batches):
+                total += t
+                mate1 += m1
+                illegal += il
+                stalemate += sm
+                dec_n += d
+                eq_n += eq
+                inc_n += inc
+                cap_n += cap
+                for s in smp:
+                    if len(samples) < 10:
+                        samples.append(s)
+
+    violations = illegal + stalemate + eq_n + inc_n
+    return {
+        "program": str(program_path),
+        "material": material.upper(),
+        "board": f"{width}x{height}",
+        "nodes": length_nodes,
+        "bytes": length_bytes,
+        "valid_positions": total,
+        "mate1": mate1,
+        "illegal": illegal,
+        "stalemate": stalemate,
+        "piece_captured": cap_n,
+        "total_steps": dec_n + eq_n + inc_n,
+        "decrease": dec_n,
+        "equal": eq_n,
+        "increase": inc_n,
+        "violations": violations,
+        "ok": violations == 0,
+        "samples": samples,
+        "seconds": time.perf_counter() - t0,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
 
@@ -1838,9 +2356,63 @@ def _cmd_audit_rank(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_lint_lia(args: argparse.Namespace) -> int:
+    prog_path = Path(args.program)
+    try:
+        allow_fmt = args.allow_move_formatting or (args.fn == "hint")
+        res = lint_lia(prog_path, fn_name=args.fn, allow_move_formatting=allow_fmt)
+    except (OSError, SyntaxError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if res["ok"]:
+        print(f"LIA_OK: {res['program']} fn={res['fn']} (checked: {', '.join(res['checked_functions'])})")  # type: ignore[arg-type]
+        return 0
+    print(f"LIA_REJECTED: {res['program']} fn={res['fn']}")
+    for v in res["violations"]:  # type: ignore[union-attr]
+        print(f"  - {v}")
+    return 1
+
+
+def _cmd_audit_hint(args: argparse.Namespace) -> int:
+    prog_path = Path(args.program)
+    try:
+        w, h = parse_board_size(args.board)
+        res = audit_hint(
+            prog_path,
+            args.material,
+            w,
+            h,
+            pot_fn_name=args.pot_fn,
+            hint_fn_name=args.hint_fn,
+            jobs=args.jobs,
+        )
+    except (ProgramValidationError, FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"program: {res['program']} ({res['nodes']} AST nodes, {res['bytes']} bytes)")
+    print(f"material: {res['material']} board: {res['board']} valid_positions: {res['valid_positions']}")
+    print(
+        f"mate1={res['mate1']} | illegal={res['illegal']} | stalemate={res['stalemate']} "
+        f"| piece_captured={res['piece_captured']}"
+    )
+    print(
+        f"two_ply_steps={res['total_steps']} | decrease={res['decrease']} "
+        f"| equal={res['equal']} | increase={res['increase']}"
+    )
+    print(f"violations={res['violations']} | ok={res['ok']} | seconds={res['seconds']:.2f}s")
+    samples = res["samples"]
+    if samples:
+        print(f"violation samples (up to 10):")
+        for kind, fen, m, r, detail in samples:  # type: ignore[union-attr]
+            print(f"  [{kind}] {fen} --({m} {r})--> {detail}")
+    return 0 if res["ok"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Expand, score, union-prove, and rank-audit chess strategy programs."
+        description="Expand, score, union-prove, lint-LIA, and audit chess strategy programs."
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -1902,6 +2474,29 @@ def main(argv: list[str] | None = None) -> int:
     p_aud.add_argument("--fn", default="_pot", help="Potential function name in program (default: _pot)")
     p_aud.add_argument("--jobs", type=int, default=4, help="Parallel worker count (1..4)")
 
+    p_lia = sub.add_parser(
+        "lint-lia",
+        help="Check that a program's potential (or witness) function stays inside Linear Integer Arithmetic.",
+    )
+    p_lia.add_argument("program", help="Path to strategy .py file")
+    p_lia.add_argument("--fn", default="_pot", help="Function name to check (default: _pot)")
+    p_lia.add_argument(
+        "--allow-move-formatting",
+        action="store_true",
+        help="Allow rules.square_name() for formatting move strings (auto-enabled for --fn hint)",
+    )
+
+    p_hint = sub.add_parser(
+        "audit-hint",
+        help="Audit an explicit witness rule hint(pos) over every valid position of (material, board).",
+    )
+    p_hint.add_argument("program", help="Path to strategy .py file")
+    p_hint.add_argument("--material", required=True, help="Material class, e.g. KQK")
+    p_hint.add_argument("--board", required=True, help="Board size WxH, e.g. 4x4")
+    p_hint.add_argument("--pot-fn", default="_pot", help="Potential function name (default: _pot)")
+    p_hint.add_argument("--hint-fn", default="hint", help="Witness function name (default: hint)")
+    p_hint.add_argument("--jobs", type=int, default=4, help="Parallel worker count (1..4)")
+
     args = parser.parse_args(argv)
     if args.cmd == "expand":
         return _cmd_expand(args)
@@ -1911,6 +2506,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_expand_all(args)
     if args.cmd == "audit-rank":
         return _cmd_audit_rank(args)
+    if args.cmd == "lint-lia":
+        return _cmd_lint_lia(args)
+    if args.cmd == "audit-hint":
+        return _cmd_audit_hint(args)
     return 1
 
 

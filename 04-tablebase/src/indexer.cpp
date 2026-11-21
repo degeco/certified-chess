@@ -1,4 +1,5 @@
 #include "indexer.hpp"
+#include <cstring>
 #include <stdexcept>
 
 namespace tb {
@@ -11,6 +12,48 @@ inline int eng_to_dense_sq(int w, int eng_sq) {
 
 inline int dense_to_eng_sq(int w, int dsq) {
     return mchess::make_sq(dsq % w, dsq / w);
+}
+
+inline int select_nth_bit(uint64_t bb, int n) {
+    uint32_t lo = static_cast<uint32_t>(bb);
+    int c = __builtin_popcount(lo);
+    int sq = 0;
+    if (n >= c) {
+        n -= c;
+        bb >>= 32;
+        sq = 32;
+    }
+    uint16_t lo16 = static_cast<uint16_t>(bb);
+    int c16 = __builtin_popcount(lo16);
+    if (n >= c16) {
+        n -= c16;
+        bb >>= 16;
+        sq += 16;
+    }
+    while (n--) {
+        bb &= bb - 1;
+    }
+    return sq + __builtin_ctzll(bb);
+}
+
+bool non_stm_in_check(int w, int h, const RawState& st) {
+    const mchess::Color us = st.stm;
+    const mchess::Color them = ~us;
+    const uint64_t board_mask = mchess::make_board_mask(w, h);
+    const int ksq = mchess::lsb(st.bb[them][mchess::KING]);
+    const mchess::Tables& tbl = mchess::tables();
+    if (tbl.pawn_att[them][ksq] & st.bb[us][mchess::PAWN]) return true;
+    if (tbl.knight_att[ksq] & st.bb[us][mchess::KNIGHT]) return true;
+    if (tbl.king_att[ksq] & st.bb[us][mchess::KING]) return true;
+    uint64_t occ = 0;
+    for (int c = 0; c < 2; ++c)
+        for (int pt = 0; pt < 6; ++pt)
+            occ |= st.bb[c][pt];
+    if (mchess::bishop_attacks(ksq, occ, board_mask) &
+        (st.bb[us][mchess::BISHOP] | st.bb[us][mchess::QUEEN])) return true;
+    if (mchess::rook_attacks(ksq, occ, board_mask) &
+        (st.bb[us][mchess::ROOK] | st.bb[us][mchess::QUEEN])) return true;
+    return false;
 }
 
 } // namespace
@@ -80,25 +123,28 @@ TableIndexer::TableIndexer(int w, int h, const MaterialSig& sig)
     base_size_ = static_cast<uint32_t>(prod);
     total_size_ = base_size_;
 
-    // On 8x8, enumerate valid non-zero castling / ep states if possible in this signature.
+    // On 8x8, enumerate valid non-zero castling / ep states.
+    // Castling is enumerated when base_size_ <= 5,000,000; en passant is always enumerated
+    // when both sides have pawns (needed e.g. for 8x8 KPKP).
     if (is_8x8()) {
         bool may_castle = (sig_.count[mchess::WHITE][mchess::ROOK] > 0 ||
-                           sig_.count[mchess::BLACK][mchess::ROOK] > 0);
+                           sig_.count[mchess::BLACK][mchess::ROOK] > 0) &&
+                          (base_size_ <= 5000000U);
         bool may_ep = (sig_.count[mchess::WHITE][mchess::PAWN] > 0 &&
                        sig_.count[mchess::BLACK][mchess::PAWN] > 0);
 
-        if ((may_castle || may_ep) && base_size_ <= 5000000U) {
+        if (may_castle || may_ep) {
             auto has_piece = [](const RawState& st, int f, int r, mchess::Color c, mchess::PieceType pt) {
                 int sq = mchess::make_sq(f, r);
                 return (st.bb[c][pt] & mchess::sq_bb(sq)) != 0;
             };
 
-            for (uint32_t b = 0; b < base_size_; ++b) {
+            auto check_base_state = [&](uint32_t b, bool do_castle, bool do_ep) {
                 RawState st;
                 decode_raw(b, st);
 
                 uint8_t max_cast = 0;
-                if (may_castle) {
+                if (do_castle) {
                     if (has_piece(st, 4, 0, mchess::WHITE, mchess::KING)) {
                         if (has_piece(st, 7, 0, mchess::WHITE, mchess::ROOK)) max_cast |= mchess::WK_CASTLE;
                         if (has_piece(st, 0, 0, mchess::WHITE, mchess::ROOK)) max_cast |= mchess::WQ_CASTLE;
@@ -109,9 +155,10 @@ TableIndexer::TableIndexer(int w, int h, const MaterialSig& sig)
                     }
                 }
 
-                std::vector<int8_t> cand_eps;
-                cand_eps.push_back(mchess::NO_SQ);
-                if (may_ep) {
+                int8_t cand_eps[9];
+                int n_eps = 0;
+                cand_eps[n_eps++] = mchess::NO_SQ;
+                if (do_ep) {
                     int pawn_rank = (st.stm == mchess::WHITE) ? 4 : 3;
                     int ep_rank = (st.stm == mchess::WHITE) ? 5 : 2;
                     int orig_rank = (st.stm == mchess::WHITE) ? 6 : 1;
@@ -119,28 +166,35 @@ TableIndexer::TableIndexer(int w, int h, const MaterialSig& sig)
                     for (int c = 0; c < 2; ++c)
                         for (int pt = 0; pt < 6; ++pt)
                             occ |= st.bb[c][pt];
+                    const mchess::Tables& tbl = mchess::tables();
                     for (int f = 0; f < 8; ++f) {
                         int cap_sq = mchess::make_sq(f, pawn_rank);
                         int ep_sq = mchess::make_sq(f, ep_rank);
                         int orig_sq = mchess::make_sq(f, orig_rank);
                         if ((st.bb[~st.stm][mchess::PAWN] & mchess::sq_bb(cap_sq)) &&
+                            (st.bb[st.stm][mchess::PAWN] & tbl.pawn_att[~st.stm][ep_sq]) &&
                             !(occ & mchess::sq_bb(ep_sq)) &&
                             !(occ & mchess::sq_bb(orig_sq))) {
-                            cand_eps.push_back(static_cast<int8_t>(ep_sq));
+                            cand_eps[n_eps++] = static_cast<int8_t>(ep_sq);
                         }
                     }
                 }
 
+                if (max_cast == 0 && n_eps == 1) return;
+                if (non_stm_in_check(w_, h_, st)) return;
+
+                char buf[128];
                 for (uint8_t cm = 0; cm <= max_cast; ++cm) {
                     if ((cm & max_cast) != cm) continue;
-                    for (int8_t ep : cand_eps) {
+                    for (int ei = 0; ei < n_eps; ++ei) {
+                        int8_t ep = cand_eps[ei];
                         if (cm == 0 && ep == mchess::NO_SQ) continue;
                         RawState cand = st;
                         cand.castling = cm;
                         cand.ep_sq = ep;
-                        std::string fen = raw_to_fen(w_, h_, cand);
+                        int len = raw_to_fen_buf(w_, h_, cand, buf);
                         mchess::Position pos;
-                        if (mchess::Position::parse(fen, pos) &&
+                        if (mchess::Position::parse(std::string_view(buf, len), pos) &&
                             pos.castling_rights() == cm &&
                             pos.ep_square() == ep) {
                             uint32_t idx = total_size_++;
@@ -148,6 +202,71 @@ TableIndexer::TableIndexer(int w, int h, const MaterialSig& sig)
                             extra_map_[make_extra_key(b, cm, ep)] = idx;
                         }
                     }
+                }
+            };
+
+            if (!may_castle && may_ep && base_size_ > 5000000U &&
+                groups_.size() >= 2 &&
+                groups_[0].pawns_only && groups_[1].pawns_only) {
+                // Fast EP enumeration: filter by pawn placement (groups 0 and 1) before iterating kings/pieces.
+                uint32_t r0 = group_radix_[0];
+                uint32_t r1 = group_radix_[1];
+                uint32_t pawn_mod = r0 * r1;
+                uint32_t rest_cnt = (base_size_ >> 1) / pawn_mod;
+
+                constexpr uint64_t FILE_A = 0x0101010101010101ULL;
+                constexpr uint64_t FILE_H = 0x8080808080808080ULL;
+                constexpr uint64_t RANK_4 = 0x00000000FF000000ULL;
+                constexpr uint64_t RANK_5 = 0x000000FF00000000ULL;
+
+                for (uint32_t pcode = 0; pcode < pawn_mod; ++pcode) {
+                    uint64_t wp_bb = 0;
+                    uint64_t bp_bb = 0;
+                    uint64_t used = 0;
+                    uint32_t tmp_code = pcode;
+                    for (int gi = 0; gi < 2; ++gi) {
+                        const Group& g = groups_[gi];
+                        uint32_t radix = group_radix_[gi];
+                        uint64_t rank = tmp_code % radix;
+                        tmp_code /= radix;
+                        uint64_t avail = pawn_dense_mask_ & ~used;
+                        uint64_t placed = 0;
+                        if (g.count == 1) {
+                            int dsq = select_nth_bit(avail, static_cast<int>(rank));
+                            placed = 1ULL << dsq;
+                        } else {
+                            uint8_t sq_list[64];
+                            int m = 0;
+                            uint64_t t = avail;
+                            while (t) sq_list[m++] = static_cast<uint8_t>(mchess::pop_lsb(t));
+                            int x = m - 1;
+                            for (int i = g.count; i >= 1; --i) {
+                                while (binom_[x][i] > rank) --x;
+                                rank -= binom_[x][i];
+                                placed |= (1ULL << sq_list[x]);
+                                --x;
+                            }
+                        }
+                        used |= placed;
+                        if (gi == 0) wp_bb = placed;
+                        else bp_bb = placed;
+                    }
+
+                    bool has_w_ep = (((((wp_bb & RANK_5) << 1) & ~FILE_A) |
+                                      (((wp_bb & RANK_5) >> 1) & ~FILE_H)) & bp_bb) != 0;
+                    bool has_b_ep = (((((bp_bb & RANK_4) << 1) & ~FILE_A) |
+                                      (((bp_bb & RANK_4) >> 1) & ~FILE_H)) & wp_bb) != 0;
+                    if (!has_w_ep && !has_b_ep) continue;
+
+                    for (uint32_t rcode = 0; rcode < rest_cnt; ++rcode) {
+                        uint32_t base_code = rcode * pawn_mod + pcode;
+                        if (has_w_ep) check_base_state((base_code << 1) | 0U, false, true);
+                        if (has_b_ep) check_base_state((base_code << 1) | 1U, false, true);
+                    }
+                }
+            } else {
+                for (uint32_t b = 0; b < base_size_; ++b) {
+                    check_base_state(b, may_castle, may_ep);
                 }
             }
         }
@@ -170,6 +289,14 @@ void TableIndexer::decode_base_dense(uint32_t base_idx, uint64_t dense_bb[2][6],
         rem_code /= radix;
 
         uint64_t avail = (g.pawns_only ? pawn_dense_mask_ : all_dense_mask_) & ~used;
+        if (g.count == 1) {
+            int dsq = select_nth_bit(avail, static_cast<int>(rank));
+            uint64_t bit = 1ULL << dsq;
+            dense_bb[g.color][g.pt] |= bit;
+            used |= bit;
+            continue;
+        }
+
         uint8_t sq_list[64];
         int m = 0;
         uint64_t tmp = avail;
@@ -218,10 +345,6 @@ uint32_t TableIndexer::encode_base_dense(const uint64_t dense_bb[2][6], mchess::
 }
 
 void TableIndexer::decode_raw(uint32_t idx, RawState& out) const {
-    for (int c = 0; c < 2; ++c)
-        for (int pt = 0; pt < 6; ++pt)
-            out.bb[c][pt] = 0;
-
     uint32_t b_idx = idx;
     if (idx >= base_size_) {
         const ExtraState& ex = extra_states_[idx - base_size_];
@@ -232,6 +355,15 @@ void TableIndexer::decode_raw(uint32_t idx, RawState& out) const {
         out.castling = 0;
         out.ep_sq = mchess::NO_SQ;
     }
+
+    if (w_ == 8) {
+        decode_base_dense(b_idx, out.bb, out.stm);
+        return;
+    }
+
+    for (int c = 0; c < 2; ++c)
+        for (int pt = 0; pt < 6; ++pt)
+            out.bb[c][pt] = 0;
 
     uint64_t dense_bb[2][6]{};
     decode_base_dense(b_idx, dense_bb, out.stm);
@@ -246,7 +378,7 @@ void TableIndexer::decode_raw(uint32_t idx, RawState& out) const {
     }
 }
 
-std::string TableIndexer::raw_to_fen(int w, int h, const RawState& st) {
+int TableIndexer::raw_to_fen_buf(int w, int h, const RawState& st, char* buf) {
     char board[8][8];
     for (int r = 0; r < h; ++r)
         for (int f = 0; f < w; ++f)
@@ -264,8 +396,7 @@ std::string TableIndexer::raw_to_fen(int w, int h, const RawState& st) {
         }
     }
 
-    std::string fen;
-    fen.reserve(64);
+    int len = 0;
     for (int r = h - 1; r >= 0; --r) {
         int empty = 0;
         for (int f = 0; f < w; ++f) {
@@ -274,55 +405,72 @@ std::string TableIndexer::raw_to_fen(int w, int h, const RawState& st) {
                 ++empty;
             } else {
                 if (empty > 0) {
-                    fen.push_back(static_cast<char>('0' + empty));
+                    buf[len++] = static_cast<char>('0' + empty);
                     empty = 0;
                 }
-                fen.push_back(ch);
+                buf[len++] = ch;
             }
         }
-        if (empty > 0) fen.push_back(static_cast<char>('0' + empty));
-        if (r > 0) fen.push_back('/');
+        if (empty > 0) buf[len++] = static_cast<char>('0' + empty);
+        if (r > 0) buf[len++] = '/';
     }
 
-    fen.push_back(' ');
-    fen.push_back(st.stm == mchess::WHITE ? 'w' : 'b');
-    fen.push_back(' ');
+    buf[len++] = ' ';
+    buf[len++] = (st.stm == mchess::WHITE) ? 'w' : 'b';
+    buf[len++] = ' ';
     if (st.castling == 0) {
-        fen.push_back('-');
+        buf[len++] = '-';
     } else {
-        if (st.castling & mchess::WK_CASTLE) fen.push_back('K');
-        if (st.castling & mchess::WQ_CASTLE) fen.push_back('Q');
-        if (st.castling & mchess::BK_CASTLE) fen.push_back('k');
-        if (st.castling & mchess::BQ_CASTLE) fen.push_back('q');
+        if (st.castling & mchess::WK_CASTLE) buf[len++] = 'K';
+        if (st.castling & mchess::WQ_CASTLE) buf[len++] = 'Q';
+        if (st.castling & mchess::BK_CASTLE) buf[len++] = 'k';
+        if (st.castling & mchess::BQ_CASTLE) buf[len++] = 'q';
     }
-    fen.push_back(' ');
+    buf[len++] = ' ';
     if (st.ep_sq == mchess::NO_SQ) {
-        fen.push_back('-');
+        buf[len++] = '-';
     } else {
-        fen += mchess::sq_to_string(st.ep_sq);
+        buf[len++] = static_cast<char>('a' + mchess::sq_file(st.ep_sq));
+        buf[len++] = static_cast<char>('1' + mchess::sq_rank(st.ep_sq));
     }
-    return fen;
+    buf[len] = '\0';
+    return len;
+}
+
+std::string TableIndexer::raw_to_fen(int w, int h, const RawState& st) {
+    char buf[128];
+    int len = raw_to_fen_buf(w, h, st, buf);
+    return std::string(buf, static_cast<size_t>(len));
 }
 
 bool TableIndexer::decode_position(uint32_t idx, mchess::Position& out) const {
     RawState st;
     decode_raw(idx, st);
-    std::string fen = raw_to_fen(w_, h_, st);
-    return mchess::Position::parse(fen, out);
+    if (st.castling == 0 && st.ep_sq == mchess::NO_SQ && non_stm_in_check(w_, h_, st)) {
+        return false;
+    }
+    char buf[128];
+    int len = raw_to_fen_buf(w_, h_, st, buf);
+    return mchess::Position::parse(std::string_view(buf, static_cast<size_t>(len)), out);
 }
 
 uint32_t TableIndexer::encode_raw(const RawState& st) const {
-    uint64_t dense_bb[2][6]{};
-    for (int c = 0; c < 2; ++c) {
-        for (int pt = 0; pt < 6; ++pt) {
-            uint64_t b = st.bb[c][pt];
-            while (b) {
-                int sq = mchess::pop_lsb(b);
-                dense_bb[c][pt] |= (1ULL << eng_to_dense_sq(w_, sq));
+    uint32_t b_idx;
+    if (w_ == 8) {
+        b_idx = encode_base_dense(st.bb, st.stm);
+    } else {
+        uint64_t dense_bb[2][6]{};
+        for (int c = 0; c < 2; ++c) {
+            for (int pt = 0; pt < 6; ++pt) {
+                uint64_t b = st.bb[c][pt];
+                while (b) {
+                    int sq = mchess::pop_lsb(b);
+                    dense_bb[c][pt] |= (1ULL << eng_to_dense_sq(w_, sq));
+                }
             }
         }
+        b_idx = encode_base_dense(dense_bb, st.stm);
     }
-    uint32_t b_idx = encode_base_dense(dense_bb, st.stm);
     if (st.castling == 0 && st.ep_sq == mchess::NO_SQ) {
         return b_idx;
     }

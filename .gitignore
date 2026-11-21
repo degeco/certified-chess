@@ -18,3 +18,8 @@ agent*.log
 !07-strategies/results/krk_v21_*.cert
 !07-strategies/results/mini4x4-start.cert
 07-strategies/results/*.json
+# local handoff notes (contain account details)
+HANDOFF.md
+# regenerable tablebase cache of the ladder folder
+09-ladder/tb/
+09-ladder/results/*.cert
