@@ -1,0 +1,60 @@
+200 valid source certificates
+6397 mutants, 35 kinds: all_ranks_zero, bad_move_text, blank_body, blank_end, blank_header, change_move, comment, corrupt_entry, corrupt_root, crlf, drop_last_line, drop_line, dup_line, dup_line_other_move, empty, extra_field, header_variants, missing_field, no_final_newline, rank_bad_format, rank_down, rank_up, rank_zero, reorder, reverse, root_flip_stm, root_other_entry, root_successor, spaces_for_tabs, swap_kind, swap_ranks, swap_side, swap_two_moves, trailing_ws, truncate
+kind                         n  both VALID  both INVALID  disagree
+all_ranks_zero             200         173            27         0
+bad_move_text              200           0           200         0
+blank_body                 200           0           200         0
+blank_end                  200           0           200         0
+blank_header               200           0           200         0
+change_move                161          50           111         0
+comment                    200           0           200         0
+corrupt_entry              200          14           186         0
+corrupt_root               200          28           172         0
+crlf                       200           0             0       200
+drop_last_line             200           0           200         0
+drop_line                  200           0           200         0
+dup_line                   200           0           200         0
+dup_line_other_move        158           0           158         0
+empty                      200           0           200         0
+extra_field                200           0           200         0
+header_variants            200           0           200         0
+missing_field              200           0           200         0
+no_final_newline           200         200             0         0
+rank_bad_format            200           0           200         0
+rank_down                   27           7            20         0
+rank_up                    200          11           189         0
+rank_zero                   27           7            20         0
+reorder                    200         200             0         0
+reverse                    200         200             0         0
+root_flip_stm              200          49           151         0
+root_other_entry           200         200             0         0
+root_successor             200         200             0         0
+spaces_for_tabs            200           0           200         0
+swap_kind                  200           0           200         0
+swap_ranks                  24           0            24         0
+swap_side                  200           0           200         0
+swap_two_moves             200           8           192         0
+trailing_ws                200           0           200         0
+truncate                   200           0           200         0
+TOTAL mutants=6397 disagreements=200 reorder-changed-verdict=0
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKQ_453.cert mutant=/tmp/tmp_voy5iuu/0_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KK_105.cert mutant=/tmp/tmp_voy5iuu/1_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x5/4x5_KKQ_485.cert mutant=/tmp/tmp_voy5iuu/2_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKN_1468.cert mutant=/tmp/tmp_voy5iuu/3_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x5/4x5_KK_185.cert mutant=/tmp/tmp_voy5iuu/4_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KKQ_435.cert mutant=/tmp/tmp_voy5iuu/5_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x5/4x5_KK_25.cert mutant=/tmp/tmp_voy5iuu/6_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKB_1154.cert mutant=/tmp/tmp_voy5iuu/7_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_5x5/5x5_KKQ_493.cert mutant=/tmp/tmp_voy5iuu/8_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_294.cert mutant=/tmp/tmp_voy5iuu/9_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_199.cert mutant=/tmp/tmp_voy5iuu/10_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKR_846.cert mutant=/tmp/tmp_voy5iuu/11_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_184.cert mutant=/tmp/tmp_voy5iuu/12_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_18.cert mutant=/tmp/tmp_voy5iuu/13_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKR_757.cert mutant=/tmp/tmp_voy5iuu/14_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x5/4x5_KK_319.cert mutant=/tmp/tmp_voy5iuu/15_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_265.cert mutant=/tmp/tmp_voy5iuu/16_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_286.cert mutant=/tmp/tmp_voy5iuu/17_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_3x3/3x3_KKR_763.cert mutant=/tmp/tmp_voy5iuu/18_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+DISAGREE crlf src=/home/dege/chess/08-checker2/../04-tablebase/results/certs_4x4/4x4_KK_45.cert mutant=/tmp/tmp_voy5iuu/19_crlf.cert python=('VALID', 0) go=('INVALID', 1)
+exit=1

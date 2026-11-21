@@ -1,0 +1,9 @@
+load average at start: ['11.28', '9.08', '6.63']
+solver big (d3_b3, d3_c3_Rd2_b3, mini4x5_draw_w)
+  python               37088 entries  cpu    9.01s  wall   11.79s  ->       4118 entries/cpu-s        3146 entries/wall-s
+  go (4 threads)       37088 entries  cpu    0.47s  wall    0.71s  ->      78660 entries/cpu-s       52162 entries/wall-s
+  go (GOMAXPROCS=1)    37088 entries  cpu    0.47s  wall    0.53s  ->      79353 entries/cpu-s       69986 entries/wall-s
+300 small 5x5 tablebase certs
+  python               31742 entries  cpu   30.48s  wall   32.13s  ->       1042 entries/cpu-s         988 entries/wall-s
+  go (4 threads)       31742 entries  cpu    0.96s  wall    1.23s  ->      33132 entries/cpu-s       25899 entries/wall-s
+  go (GOMAXPROCS=1)    31742 entries  cpu    0.85s  wall    1.24s  ->      37148 entries/cpu-s       25599 entries/wall-s

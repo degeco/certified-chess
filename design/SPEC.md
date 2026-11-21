@@ -1,6 +1,6 @@
-# SPEC v1.1: certified solving of small-board chess
+# SPEC v1.2: certified solving of small-board chess
 
-Changes from v1 are listed in section 7. Where v1 and v1.1 differ, v1.1 rules.
+Changes from earlier versions are listed in section 7. The newest version rules.
 
 ## 1. The idea
 
@@ -66,6 +66,11 @@ A position string is **valid** only if all of these hold; every reader rejects a
 - no pawn of either colour on rank 1 or on rank `H`;
 - the side not to move is not in check;
 - castling letters only where the king and that rook stand on their original squares;
+- an `ep` square other than `-` only on 8x8 and only if all of these hold: it is on rank 6
+  with White to move or rank 3 with Black to move; it is empty; the square behind it from
+  which the double step started (rank 7 or rank 2, same file) is empty; an enemy pawn stands
+  on the square in front of it where the double step ended (rank 5 or rank 4); and at least
+  one en-passant capture onto it is legal;
 - placement, `stm`, `castling` and `ep` are well formed as described above.
 
 Readers must accept and ignore trailing halfmove/fullmove fields. Writers must emit this
@@ -109,6 +114,9 @@ A certificate proves a lower bound on what one player, the **prover**, can force
   ATLEAST_DRAW entry.
 - Every entry position is valid, canonical, and has the board size of the root. The root is
   valid and canonical. No blank lines and no comment lines in the body.
+- The file is UTF-8 text. A line ends with a single line feed (`\n`) and nothing else: a
+  carriage return anywhere in the file makes the certificate invalid. The line feed after the
+  last line may be missing. Fields are separated by exactly one tab.
 
 Write `p.m` for the position after move `m` in `p`.
 
@@ -190,6 +198,19 @@ sizes) and `design/walktest.py` (random play on 8x8, covering en passant and cas
    Both must reject.
 3. Rank domain and certificate file strictness are now explicit (section 4).
 4. H1 is measured on ensembles of roots (section 5), following the `01-survey` critique.
+
+### v1.2
+
+Both found by `08-checker2`, the second checker written from this spec alone. In each case
+`03-checker` accepted input that `08-checker2` rejected. Neither could make a valid
+certificate prove something false, since successor positions are always computed by the
+checker itself, but two checkers must not disagree on any file.
+
+5. Line endings and separators of a certificate file are now defined (section 4). The Python
+   checker accepted carriage returns.
+6. Well-formedness of the `ep` field is now spelled out (section 3). The Python checker
+   accepted an `ep` square whose double-step origin square was occupied; `02-engine` and
+   `08-checker2` rejected it.
 
 Not changed, by decision: certificates stay flat lists of positions. References from a
 certificate into a verified tablebase, and certificates stated over sets of positions, are

@@ -1,4 +1,4 @@
-"""Trusted rules implementation for small-board and 8x8 chess (SPEC v1.1).
+"""Trusted rules implementation for small-board and 8x8 chess (SPEC v1.2).
 
 Designed for clarity and easy human auditing:
 - Flat immutable mailbox board of size W x H (3 <= W, H <= 8).
@@ -216,14 +216,16 @@ def _is_ascii_uint(s: str) -> bool:
 def parse_position(text: str) -> Position:
     """Parse a position string (4 fields, or 5/6 with trailing FEN counters).
 
-    Enforces SPEC v1.1 sections 2 and 3:
+    Enforces SPEC v1.2 sections 2 and 3:
     - Board dimensions 3 <= W, H <= 8, uniform rank widths, maximal empty runs.
     - Exactly one king per side; no pawn of either colour on rank 1 or rank H.
     - Opponent king is not in check.
     - Off 8x8: castling and ep must be '-'.
-    - On 8x8: castling is a subset of 'KQkq' in order (or '-') with king and
-      matching rook on their original squares; ep is normalized to None if no
-      legal en-passant capture exists.
+    - On 8x8: castling is a non-empty subset of 'KQkq' in order (or '-') with
+      king and matching rook on their original squares; an ep square other than
+      '-' must be on rank 6 (White) / rank 3 (Black), empty, with an empty
+      origin square behind it (rank 7 / rank 2), an enemy pawn in front of it
+      (rank 5 / rank 4), and at least one legal en-passant capture onto it.
     """
     if not isinstance(text, str) or "\t" in text or "\n" in text or "\r" in text:
         raise ValueError("position string contains forbidden whitespace")
@@ -300,6 +302,8 @@ def parse_position(text: str) -> Position:
     if castling_str == "-":
         castling = ""
     else:
+        if not castling_str:
+            raise ValueError("empty castling field")
         if not is_8x8:
             raise ValueError("castling rights must be '-' off 8x8")
         last_idx = -1
@@ -318,20 +322,31 @@ def parse_position(text: str) -> Position:
             raise ValueError("castling right 'q' requires k on e8 and r on a8")
         castling = castling_str
 
-    # Parse en passant
+    # Parse en passant (SPEC v1.2 section 3).
     ep: tuple[int, int] | None = None
     if ep_str != "-":
         if not is_8x8:
             raise ValueError("en passant must be '-' off 8x8")
         ef, er = parse_square(ep_str, 8, 8)
         if stm == "w":
-            if er != 5 or board[5 * 8 + ef] != "." or board[4 * 8 + ef] != "p":
+            if (
+                er != 5
+                or board[5 * 8 + ef] != "."
+                or board[6 * 8 + ef] != "."
+                or board[4 * 8 + ef] != "p"
+            ):
                 raise ValueError(f"invalid en-passant square for White: {ep_str!r}")
         else:
-            if er != 2 or board[2 * 8 + ef] != "." or board[3 * 8 + ef] != "P":
+            if (
+                er != 2
+                or board[2 * 8 + ef] != "."
+                or board[1 * 8 + ef] != "."
+                or board[3 * 8 + ef] != "P"
+            ):
                 raise ValueError(f"invalid en-passant square for Black: {ep_str!r}")
-        if _has_legal_ep_capture(board, stm, (ef, er)):
-            ep = (ef, er)
+        if not _has_legal_ep_capture(board, stm, (ef, er)):
+            raise ValueError(f"en-passant square has no legal capture: {ep_str!r}")
+        ep = (ef, er)
 
     return Position(
         width=width,

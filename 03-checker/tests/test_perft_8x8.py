@@ -75,9 +75,14 @@ class Test8x8RulesDetails(unittest.TestCase):
             after_e4.to_fen(),
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -",
         )
-        # Standard FEN reader accepts e3 and canonicalizes to '-'.
+        # SPEC v1.2 section 3: every reader rejects an ep square without a legal capture.
+        with self.assertRaises(ValueError):
+            parse_position(
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+            )
+        # Canonical '-' with trailing FEN counters is still accepted and stripped.
         parsed = parse_position(
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         )
         self.assertIsNone(parsed.ep)
         self.assertEqual(parsed.to_fen(), after_e4.to_fen())
@@ -153,6 +158,62 @@ class Test8x8RulesDetails(unittest.TestCase):
             with self.subTest(fen=fen):
                 with self.assertRaises(ValueError):
                     parse_position(fen)
+
+    def test_empty_castling_field_rejected_v1_2(self) -> None:
+        # Double space between stm and ep yields an empty castling field on 8x8.
+        with self.assertRaises(ValueError):
+            parse_position("4k3/8/8/8/8/8/8/4K3 w  -")
+
+    def test_ep_well_formedness_v1_2(self) -> None:
+        # SPEC v1.2 section 3: every ep condition checked for White and mirrored for Black.
+        bad_ep_cases = [
+            # Origin square occupied (rank 7 for White, rank 2 for Black)
+            ("w_origin_pawn", "4k3/4p3/8/3Pp3/8/8/8/4K3 w - e6"),
+            ("w_origin_piece", "4k3/4n3/8/3Pp3/8/8/8/4K3 w - e6"),
+            ("b_origin_pawn", "4k3/8/8/8/3pP3/8/4P3/4K3 b - e3"),
+            ("b_origin_piece", "4k3/8/8/8/3pP3/8/4N3/4K3 b - e3"),
+            # Target square occupied (rank 6 for White, rank 3 for Black)
+            ("w_target_occupied", "4k3/8/4n3/3Pp3/8/8/8/4K3 w - e6"),
+            ("b_target_occupied", "4k3/8/8/8/3pP3/4N3/8/4K3 b - e3"),
+            # No enemy pawn in front (rank 5 for White, rank 4 for Black)
+            ("w_no_pawn_empty", "4k3/8/8/3P4/8/8/8/4K3 w - e6"),
+            ("w_no_pawn_piece", "4k3/8/8/3Pn3/8/8/8/4K3 w - e6"),
+            ("w_no_pawn_own", "4k3/8/8/3PP3/8/8/8/4K3 w - e6"),
+            ("b_no_pawn_empty", "4k3/8/8/8/3p4/8/8/4K3 b - e3"),
+            ("b_no_pawn_piece", "4k3/8/8/8/3pN3/8/8/4K3 b - e3"),
+            ("b_no_pawn_own", "4k3/8/8/8/3pp3/8/8/4K3 b - e3"),
+            # Wrong rank
+            ("w_wrong_rank_e3", "4k3/8/8/3Pp3/8/8/8/4K3 w - e3"),
+            ("w_wrong_rank_black_setup", "4k3/8/8/8/3pP3/8/8/4K3 w - e3"),
+            ("w_wrong_rank_e5", "4k3/8/8/3Pp3/8/8/8/4K3 w - e5"),
+            ("b_wrong_rank_e6", "4k3/8/8/8/3pP3/8/8/4K3 b - e6"),
+            ("b_wrong_rank_white_setup", "4k3/8/8/3Pp3/8/8/8/4K3 b - e6"),
+            ("b_wrong_rank_e4", "4k3/8/8/8/3pP3/8/8/4K3 b - e4"),
+            # Capturing pawn pinned (or absent) so no legal ep capture exists
+            ("w_horizontal_pin", "4k3/8/8/r2Pp2K/8/8/8/8 w - e6"),
+            ("w_vertical_pin", "3rk3/8/8/3Pp3/8/8/8/3K4 w - e6"),
+            ("w_no_capturer", "4k3/8/8/4p3/8/8/8/4K3 w - e6"),
+            ("b_horizontal_pin", "8/8/8/8/R2pP2k/8/8/4K3 b - e3"),
+            ("b_vertical_pin", "3k4/8/8/8/3pP3/8/8/3RK3 b - e3"),
+            ("b_no_capturer", "4k3/8/8/8/4P3/8/8/4K3 b - e3"),
+        ]
+        for label, fen in bad_ep_cases:
+            with self.subTest(case=label, fen=fen):
+                with self.assertRaises(ValueError):
+                    parse_position(fen)
+
+        # Correct ep positions (White to move and mirrored Black to move) must be accepted.
+        valid_w = "4k3/8/8/3Pp3/8/8/8/4K3 w - e6"
+        pos_w = parse_position(valid_w)
+        self.assertEqual(pos_w.ep, (4, 5))
+        self.assertEqual(pos_w.to_fen(), valid_w)
+        self.assertIn("d5e6", legal_moves(pos_w))
+
+        valid_b = "4k3/8/8/8/3pP3/8/8/4K3 b - e3"
+        pos_b = parse_position(valid_b)
+        self.assertEqual(pos_b.ep, (4, 2))
+        self.assertEqual(pos_b.to_fen(), valid_b)
+        self.assertIn("d4e3", legal_moves(pos_b))
 
 
 if __name__ == "__main__":

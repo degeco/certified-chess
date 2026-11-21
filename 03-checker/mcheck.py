@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted certificate checker and CLI for small-board and 8x8 chess (SPEC v1.1)."""
+"""Trusted certificate checker and CLI for small-board and 8x8 chess (SPEC v1.2)."""
 
 from __future__ import annotations
 
@@ -39,14 +39,6 @@ def _fail(entry: str, reason: str, t0: float) -> VerifyResult:
     )
 
 
-def _strip_newline(line: str) -> str:
-    if line.endswith("\n"):
-        line = line[:-1]
-    if line.endswith("\r"):
-        line = line[:-1]
-    return line
-
-
 def _parse_canonical_rank(rank_str: str) -> int:
     """Parse a canonical non-negative ASCII integer (no leading zeros, signs, or spaces)."""
     if rank_str == "0":
@@ -75,14 +67,28 @@ def _is_prover_stalemate(pos: Position, prover: str) -> bool:
 
 
 def verify_certificate(path: str) -> VerifyResult:
-    """Verify a certificate file strictly according to SPEC section 4."""
+    """Verify a certificate file strictly according to SPEC v1.2 section 4."""
     t0 = time.perf_counter()
 
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            lines = [_strip_newline(raw) for raw in fh]
+        with open(path, "rb") as fh:
+            text = fh.read().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         return _fail("file", f"cannot read certificate: {exc}", t0)
+
+    # SPEC v1.2 section 4: lines end with '\n' only; a carriage return anywhere
+    # in the file makes the certificate invalid; a missing final '\n' is allowed.
+    cr_idx = text.find("\r")
+    if cr_idx != -1:
+        line_no = text.count("\n", 0, cr_idx) + 1
+        return _fail(f"line {line_no}", "carriage return not allowed in certificate", t0)
+
+    if not text:
+        lines: list[str] = []
+    else:
+        if text.endswith("\n"):
+            text = text[:-1]
+        lines = text.split("\n")
 
     # Header: 3 mandatory lines.
     if len(lines) < 3:
@@ -277,7 +283,9 @@ def _cmd_batch(args: list[str]) -> int:
         print("usage: mcheck.py batch", file=sys.stderr)
         return 1
     for raw_line in sys.stdin:
-        line = _strip_newline(raw_line)
+        line = raw_line[:-1] if raw_line.endswith("\n") else raw_line
+        if line.endswith("\r"):
+            line = line[:-1]
         try:
             pos = parse_position(line)
         except ValueError:

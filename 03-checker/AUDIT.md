@@ -1,6 +1,6 @@
-# Audit Guide for `03-checker` (SPEC v1.1)
+# Audit Guide for `03-checker` (SPEC v1.2)
 
-This document walks a human reviewer through the trusted certificate checker (`rules.py` and `mcheck.py`), mapping every rule of `design/SPEC.md` (v1.1) sections 2–4 to the exact function that enforces it, and stating the soundness argument directly.
+This document walks a human reviewer through the trusted certificate checker (`rules.py` and `mcheck.py`), mapping every rule of `design/SPEC.md` (v1.2) sections 2–4 to the exact function that enforces it, and stating the soundness argument directly.
 
 The entire trusted code base is two plain Python standard-library files with no external dependencies:
 
@@ -16,8 +16,8 @@ A `Position` is an immutable dataclass with a flat mailbox tuple `board` of leng
 - **Board & encoding validation (`parse_position`, `format_position`)**:
   - Enforces `3 <= width, height <= 8`, uniform rank lengths, maximal empty-square runs, exactly one `'K'` and one `'k'`, no pawn of either colour (`'P'` or `'p'`) on rank `1` or rank `H`, and that the side *not* to move is not in check (so kings can never be captured).
   - Enforces `castling == "-"` and `ep == "-"` off 8x8.
-  - On 8x8, enforces `castling` is a subset of `"KQkq"` in order (or `"-"`) with each named king and rook standing on its original square (`K`: `K` on `e1` and `R` on `h1`; `Q`: `K` on `e1` and `R` on `a1`; `k`: `k` on `e8` and `r` on `h8`; `q`: `k` on `e8` and `r` on `a8`), with no further normalization.
-  - On 8x8, validates en-passant square geometry and normalizes `ep` to `None` unless `_has_legal_ep_capture` confirms at least one legal en-passant capture exists. (In certificates, `_parse_canonical_position` requires `pos.to_fen() == pos_str`, rejecting any non-canonical `ep` string.)
+  - On 8x8, enforces `castling` is a non-empty subset of `"KQkq"` in order (or `"-"`) with each named king and rook standing on its original square (`K`: `K` on `e1` and `R` on `h1`; `Q`: `K` on `e1` and `R` on `a1`; `k`: `k` on `e8` and `r` on `h8`; `q`: `k` on `e8` and `r` on `a8`), with no further normalization.
+  - On 8x8, rejects any `ep` square other than `"-"` unless all five SPEC v1.2 conditions hold: rank 6 with White to move (or rank 3 with Black to move), target square empty, double-step origin square behind it (rank 7 or rank 2, same file) empty, enemy pawn in front of it (rank 5 or rank 4), and `_has_legal_ep_capture` confirms at least one legal en-passant capture onto it exists.
   - Accepts optional trailing halfmove/fullmove counters when reading; `format_position` always emits the canonical 4-field string.
 - **Attacks & check (`is_square_attacked`, `in_check`)**:
   - Directly checks pawn attack squares, knight/king offsets, and orthogonal/diagonal rays on the `width x height` board.
@@ -30,12 +30,13 @@ A `Position` is an immutable dataclass with a flat mailbox tuple `board` of leng
 
 ---
 
-## 2. Mapping SPEC v1.1 Section 4 to `mcheck.py`
+## 2. Mapping SPEC v1.2 Section 4 to `mcheck.py`
 
 All certificate verification happens in `verify_certificate(path)` in `mcheck.py`. A **prover stalemate** is recognized by `_is_prover_stalemate(pos, prover)`: `pos.stm == prover and not in_check(pos) and not legal_moves(pos)`. A position is **covered** in `ATLEAST_DRAW` if it is in `entries` or `_is_prover_stalemate(pos, prover)` holds.
 
-| SPEC v1.1 Section 4 requirement | Enforcing code in `mcheck.py` |
+| SPEC v1.2 Section 4 requirement | Enforcing code in `mcheck.py` |
 |---|---|
+| UTF-8 text; lines end with `\n` only; `\r` anywhere is invalid; missing final `\n` allowed; fields separated by exactly one `\t` | Binary read (`open(path, "rb")`) + strict `.decode("utf-8")`; reject if `text.find("\r") != -1`; strip at most one trailing `\n` and `text.split("\n")`; `line.split("\t")` requiring `len(fields) == 3` |
 | Header `#cert v1`, `#claim WIN\|ATLEAST_DRAW w\|b`, `#root <pos>` | `verify_certificate` header block (checking `lines[0]`, `lines[1]`, `lines[2]`) |
 | Valid, canonical position strings everywhere (`#root` and every entry) | `_parse_canonical_position` (`parse_position(s)` and `pos.to_fen() == s`) |
 | Every entry has the board size of `#root`; no blank lines or comments in body | Body parsing loop (`len(fields) != 3` and `(pos.width, pos.height) != (root_pos.width, root_pos.height)`) |

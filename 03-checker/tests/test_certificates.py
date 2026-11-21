@@ -29,8 +29,14 @@ class TestCertificatesAndMutations(unittest.TestCase):
 
     def _write_cert(self, name: str, content: str) -> str:
         path = os.path.join(self.tmpdir, name)
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path, "w", encoding="utf-8", newline="") as fh:
             fh.write(content)
+        return path
+
+    def _write_cert_bytes(self, name: str, data: bytes) -> str:
+        path = os.path.join(self.tmpdir, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
         return path
 
     def test_real_kq_vs_k_4x4_win_certificates(self) -> None:
@@ -544,6 +550,93 @@ class TestCertificatesAndMutations(unittest.TestCase):
         for label, content in strictness_cases:
             with self.subTest(strictness=label):
                 self.assertFalse(verify_certificate(self._write_cert(f"{label}.cert", content)).valid)
+
+    def test_v1_2_line_endings_and_carriage_returns(self) -> None:
+        base_lines = [
+            "#cert v1",
+            "#claim WIN w",
+            "#root k2/2Q/2K w - -",
+            "k2/2Q/2K w - -\tc2b2\t1",
+        ]
+        lf_text = "\n".join(base_lines)
+
+        # Valid with final LF and valid without final LF.
+        res_with_lf = verify_certificate(
+            self._write_cert_bytes("lf_final.cert", (lf_text + "\n").encode("utf-8"))
+        )
+        self.assertTrue(res_with_lf.valid, res_with_lf)
+
+        res_no_lf = verify_certificate(
+            self._write_cert_bytes("lf_no_final.cert", lf_text.encode("utf-8"))
+        )
+        self.assertTrue(res_no_lf.valid, res_no_lf)
+
+        # Also valid without final LF for an empty-body opponent-mated root.
+        empty_no_lf = b"#cert v1\n#claim WIN w\n#root k2/1Q1/2K b - -"
+        res_empty_no_lf = verify_certificate(
+            self._write_cert_bytes("empty_no_final.cert", empty_no_lf)
+        )
+        self.assertTrue(res_empty_no_lf.valid, res_empty_no_lf)
+
+        # Any CR anywhere in the file makes the certificate INVALID, as does a trailing blank line.
+        invalid_byte_cases = [
+            ("crlf_with_final", ("\r\n".join(base_lines) + "\r\n").encode("utf-8")),
+            ("crlf_no_final", "\r\n".join(base_lines).encode("utf-8")),
+            ("bare_cr_only_breaks", "\r".join(base_lines).encode("utf-8")),
+            ("bare_cr_only_breaks_final", ("\r".join(base_lines) + "\r").encode("utf-8")),
+            ("bare_cr_in_header", b"#cert\r v1\n#claim WIN w\n#root k2/2Q/2K w - -\nk2/2Q/2K w - -\tc2b2\t1\n"),
+            ("bare_cr_in_body_move", b"#cert v1\n#claim WIN w\n#root k2/2Q/2K w - -\nk2/2Q/2K w - -\tc2\rb2\t1\n"),
+            ("bare_cr_end_of_body_line", b"#cert v1\n#claim WIN w\n#root k2/2Q/2K w - -\nk2/2Q/2K w - -\tc2b2\t1\r\n"),
+            ("bare_cr_eof", (lf_text + "\r").encode("utf-8")),
+            ("trailing_blank_line", (lf_text + "\n\n").encode("utf-8")),
+        ]
+        for label, data in invalid_byte_cases:
+            with self.subTest(case=label):
+                res = verify_certificate(self._write_cert_bytes(f"{label}.cert", data))
+                self.assertFalse(res.valid, f"expected INVALID for {label}")
+
+    def test_v1_2_ep_well_formedness_in_certificates(self) -> None:
+        # Valid 1-entry WIN certificates with a legal ep square (mating via en passant)
+        # for both White to move and mirrored Black to move.
+        valid_ep_certs = [
+            (
+                "w_ep_mate",
+                "#cert v1\n#claim WIN w\n"
+                "#root R7/5kr1/2N4R/3Pp3/8/8/8/4K3 w - e6\n"
+                "R7/5kr1/2N4R/3Pp3/8/8/8/4K3 w - e6\td5e6\t1\n",
+            ),
+            (
+                "b_ep_mate",
+                "#cert v1\n#claim WIN b\n"
+                "#root 4k3/8/8/8/3pP3/2n4r/5KR1/r7 b - e3\n"
+                "4k3/8/8/8/3pP3/2n4r/5KR1/r7 b - e3\td4e3\t1\n",
+            ),
+        ]
+        for label, content in valid_ep_certs:
+            with self.subTest(case=label):
+                res = verify_certificate(self._write_cert(f"{label}.cert", content))
+                self.assertTrue(res.valid, res)
+
+        # Invalid ep cases (origin occupied, target occupied, no enemy pawn, wrong rank, pinned)
+        # must all make certificates INVALID for both White and Black.
+        invalid_ep_certs = [
+            ("w_origin_occupied", "w", "R7/4pkr1/2N4R/3Pp3/8/8/8/4K3 w - e6", "d5e6"),
+            ("w_task3_example", "w", "4k3/4p3/8/3Pp3/8/8/8/4K3 w - e6", "d5e6"),
+            ("b_origin_occupied", "b", "4k3/8/8/8/3pP3/2n4r/4PKR1/r7 b - e3", "d4e3"),
+            ("w_target_occupied", "w", "4k3/8/4n3/3Pp3/8/8/8/4K3 w - e6", "e1d1"),
+            ("b_target_occupied", "b", "4k3/8/8/8/3pP3/4N3/8/4K3 b - e3", "e8d8"),
+            ("w_no_enemy_pawn", "w", "4k3/8/8/3P4/8/8/8/4K3 w - e6", "e1d1"),
+            ("b_no_enemy_pawn", "b", "4k3/8/8/8/3p4/8/8/4K3 b - e3", "e8d8"),
+            ("w_wrong_rank", "w", "4k3/8/8/3Pp3/8/8/8/4K3 w - e3", "e1d1"),
+            ("b_wrong_rank", "b", "4k3/8/8/8/3pP3/8/8/4K3 b - e6", "e8d8"),
+            ("w_pinned", "w", "4k3/8/8/r2Pp2K/8/8/8/8 w - e6", "h5h4"),
+            ("b_pinned", "b", "8/8/8/8/R2pP2k/8/8/4K3 b - e3", "h4h5"),
+        ]
+        for label, side, fen, move in invalid_ep_certs:
+            with self.subTest(case=label):
+                cert = f"#cert v1\n#claim WIN {side}\n#root {fen}\n{fen}\t{move}\t1\n"
+                res = verify_certificate(self._write_cert(f"bad_{label}.cert", cert))
+                self.assertFalse(res.valid, f"expected INVALID for {label}")
 
 
 class TestCLI(unittest.TestCase):

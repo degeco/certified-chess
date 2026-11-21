@@ -221,3 +221,99 @@ OK
 
 - Round 1 spec issues 1–4 are now resolved by SPEC v1.1.
 - **Pseudo-en-passant squares in `parse_position` vs `verify_certificate`**: SPEC v1.1 section 3 states `ep` is "set only if at least one legal en-passant capture exists", while also stating readers accept trailing FEN counters. As in round 1 (and tested by `test_ep_cleared_when_no_adjacent_pawn`), `parse_position` accepts a geometrically valid standard FEN `ep` square (e.g., `e3 0 1` after `1. e4`) and normalizes `ep` to `None` when no legal capture exists, whereas `verify_certificate` requires canonical equality (`pos.to_fen() == pos_str`) and rejects any non-canonical `ep` string in a certificate. If the spec intends `parse_position` itself (e.g., in `mcheck.py moves`/`batch`) to reject non-legal `ep` squares as `ERROR` rather than normalizing them, that should be clarified explicitly in a future spec revision.
+
+---
+
+## Round 3 (SPEC v1.2 update)
+
+### 1. Changes made
+
+- **`mcheck.py`** (now 339 lines total):
+  - `verify_certificate` now reads the file in binary mode (`open(path, "rb")`) and decodes strictly as UTF-8 (`decode("utf-8")`), avoiding Python's universal newline translation.
+  - Immediately rejects any certificate containing a carriage return (`\r`) anywhere in the file (reporting the 1-based line number of the first `\r`).
+  - Strips at most one trailing `\n` (so a missing final `\n` is accepted while a trailing blank line `\n\n` remains `INVALID`) and splits strictly on `\n` (not `splitlines()`).
+  - Removed `_strip_newline` from certificate verification (retaining plain line-ending trimming only inside `_cmd_batch` for stdin lines).
+- **`rules.py`** (now 638 lines total):
+  - `parse_position` now enforces the full SPEC v1.2 section 3 `ep` well-formedness check: when `ep != "-"` on 8x8, it requires rank 6 (White) / rank 3 (Black), empty target square, **empty double-step origin square** on rank 7 (White) / rank 2 (Black), enemy pawn in front on rank 5 / rank 4, **and at least one legal en-passant capture** (`_has_legal_ep_capture`), raising `ValueError` otherwise instead of silently normalizing to `None`.
+  - **Additional line-by-line audit fix (`rules.py`)**: `parse_position` previously accepted an empty `castling` field on 8x8 (e.g., `"4k3/8/8/8/8/8/8/4K3 w  -"` where two spaces produced `castling_str == ""`, executing zero iterations of `for ch in castling_str:`). Added an explicit `if not castling_str: raise ValueError("empty castling field")` check.
+- **`AUDIT.md`**:
+  - Updated to SPEC v1.2, documenting the non-empty castling check, all five `ep` validity conditions in `rules.py`, and binary UTF-8 / `\n`-only / no-`\r` handling in `mcheck.py`.
+- **Tests added / updated** (4 new test methods; 1 Round 1 test updated for SPEC v1.2):
+  - `tests/test_certificates.py`:
+    - `test_v1_2_line_endings_and_carriage_returns`: verifies `\n` with and without final newline (including empty-body root) are `VALID`; `\r\n` (with/without final `\r\n`), bare `\r` as sole line break, bare `\r` inside header/body lines, trailing `\r` at EOF, and trailing blank line `\n\n` are all `INVALID`.
+    - `test_v1_2_ep_well_formedness_in_certificates`: verifies valid 1-entry en-passant mate certificates for both White and mirrored Black, and verifies certificates with origin occupied (including `4k3/4p3/8/3Pp3/8/8/8/4K3 w - e6`), target occupied, no enemy pawn in front, wrong rank, and pinned capturing pawn are all `INVALID`.
+  - `tests/test_perft_8x8.py`:
+    - `test_ep_well_formedness_v1_2`: tests all six `ep` categories for White to move and mirrored for Black to move (origin square occupied, target square occupied, no enemy pawn in front, wrong rank, capturing pawn pinned / absent, and a valid legal `ep` position).
+    - `test_empty_castling_field_rejected_v1_2`: tests rejection of `"4k3/8/8/8/8/8/8/4K3 w  -"`.
+    - Updated `test_ep_cleared_when_no_adjacent_pawn`: previously (Round 1 / SPEC v1.0) asserted that `parse_position("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")` normalized `e3` to `None`; under SPEC v1.2 section 3 ("every reader rejects anything else: ... and at least one en-passant capture onto it is legal"), it now asserts `ValueError` on `e3` while still asserting that `apply_move(..., "e2e4")` emits `-` and that `"… b KQkq - 0 1"` is accepted and stripped.
+
+### 2. Audit findings against SPEC v1.2
+
+Line-by-line review of SPEC v1.2 sections 2–4 against `rules.py` and `mcheck.py` found four discrepancies, all fixed above:
+1. Universal newlines and trailing `\r` stripping in `mcheck.py` (SPEC v1.2 item 5).
+2. Missing check that the double-step origin square (rank 7 / rank 2) is empty when `ep != "-"` in `rules.py` (SPEC v1.2 item 6).
+3. `parse_position` normalizing an `ep` square with no legal capture to `None` instead of rejecting it (resolved Round 2 open note; now rejected by every reader per SPEC v1.2 section 3).
+4. `parse_position` accepting an empty `castling` field on 8x8 caused by a double space (`w  -`).
+
+No remaining discrepancies were found between SPEC v1.2 and `rules.py` / `mcheck.py`.
+
+### 3. Full test output (Round 3)
+
+Command: `cd /home/dege/chess/03-checker && python3 -m unittest discover -s tests -v`
+
+```text
+test_cli_batch (test_certificates.TestCLI.test_cli_batch) ... ok
+test_cli_moves (test_certificates.TestCLI.test_cli_moves) ... ok
+test_cli_perft (test_certificates.TestCLI.test_cli_perft) ... ok
+test_cli_verify_valid_and_invalid (test_certificates.TestCLI.test_cli_verify_valid_and_invalid) ... ok
+test_all_required_mutations_rejected (test_certificates.TestCertificatesAndMutations.test_all_required_mutations_rejected) ... ok
+test_cycle_rejected_in_win_and_accepted_in_atleast_draw (test_certificates.TestCertificatesAndMutations.test_cycle_rejected_in_win_and_accepted_in_atleast_draw) ... ok
+test_malformed_files_never_crash (test_certificates.TestCertificatesAndMutations.test_malformed_files_never_crash) ... ok
+test_opponent_to_move_terminal_roots (test_certificates.TestCertificatesAndMutations.test_opponent_to_move_terminal_roots) ... ok
+test_real_draw_certificates_kvk_and_blocked (test_certificates.TestCertificatesAndMutations.test_real_draw_certificates_kvk_and_blocked) ... ok
+test_real_kq_vs_k_4x4_win_certificates (test_certificates.TestCertificatesAndMutations.test_real_kq_vs_k_4x4_win_certificates) ... ok
+test_unreachable_invalid_entry_is_rejected (test_certificates.TestCertificatesAndMutations.test_unreachable_invalid_entry_is_rejected) ... ok
+test_v1_1_atleast_draw_rejects_prover_checkmate_reply (test_certificates.TestCertificatesAndMutations.test_v1_1_atleast_draw_rejects_prover_checkmate_reply) ... ok
+test_v1_1_invalid_pawns_castling_and_file_strictness_in_certs (test_certificates.TestCertificatesAndMutations.test_v1_1_invalid_pawns_castling_and_file_strictness_in_certs) ... ok
+test_v1_1_prover_stalemate_in_k3_1p2_1P2_3K (test_certificates.TestCertificatesAndMutations.test_v1_1_prover_stalemate_in_k3_1p2_1P2_3K) ... ok
+test_v1_1_prover_stalemate_root_empty_body (test_certificates.TestCertificatesAndMutations.test_v1_1_prover_stalemate_root_empty_body) ... ok
+test_v1_1_win_rejects_prover_stalemate_reply (test_certificates.TestCertificatesAndMutations.test_v1_1_win_rejects_prover_stalemate_reply) ... ok
+test_v1_2_ep_well_formedness_in_certificates (test_certificates.TestCertificatesAndMutations.test_v1_2_ep_well_formedness_in_certificates) ... ok
+test_v1_2_line_endings_and_carriage_returns (test_certificates.TestCertificatesAndMutations.test_v1_2_line_endings_and_carriage_returns) ... ok
+test_check_evasion_capture_block_and_double_check (test_mini_boards.TestMiniBoards.test_check_evasion_capture_block_and_double_check) ... ok
+test_checkmate_on_3x3_4x4_5x5 (test_mini_boards.TestMiniBoards.test_checkmate_on_3x3_4x4_5x5) ... ok
+test_named_mini_start_positions_parse_and_roundtrip (test_mini_boards.TestMiniBoards.test_named_mini_start_positions_parse_and_roundtrip) ... ok
+test_no_castling_or_ep_off_8x8 (test_mini_boards.TestMiniBoards.test_no_castling_or_ep_off_8x8) ... ok
+test_parser_rejects_invalid_positions (test_mini_boards.TestMiniBoards.test_parser_rejects_invalid_positions) ... ok
+test_pawns_on_rank_1_or_top_rank_rejected_v1_1 (test_mini_boards.TestMiniBoards.test_pawns_on_rank_1_or_top_rank_rejected_v1_1) ... ok
+test_pins_on_mini_boards (test_mini_boards.TestMiniBoards.test_pins_on_mini_boards) ... ok
+test_promotion_on_3x3_and_4x4 (test_mini_boards.TestMiniBoards.test_promotion_on_3x3_and_4x4) ... ok
+test_single_step_pawns_only_on_mini_boards (test_mini_boards.TestMiniBoards.test_single_step_pawns_only_on_mini_boards) ... ok
+test_stalemate_on_3x3_4x4_5x5 (test_mini_boards.TestMiniBoards.test_stalemate_on_3x3_4x4_5x5) ... ok
+test_castling_blocked_by_attacked_transit_square_but_not_b1 (test_perft_8x8.Test8x8RulesDetails.test_castling_blocked_by_attacked_transit_square_but_not_b1) ... ok
+test_castling_requires_king_and_rook_on_original_squares_v1_1 (test_perft_8x8.Test8x8RulesDetails.test_castling_requires_king_and_rook_on_original_squares_v1_1) ... ok
+test_castling_rights_lost_on_rook_capture_and_king_move (test_perft_8x8.Test8x8RulesDetails.test_castling_rights_lost_on_rook_capture_and_king_move) ... ok
+test_empty_castling_field_rejected_v1_2 (test_perft_8x8.Test8x8RulesDetails.test_empty_castling_field_rejected_v1_2) ... ok
+test_ep_cleared_under_horizontal_pin (test_perft_8x8.Test8x8RulesDetails.test_ep_cleared_under_horizontal_pin) ... ok
+test_ep_cleared_when_no_adjacent_pawn (test_perft_8x8.Test8x8RulesDetails.test_ep_cleared_when_no_adjacent_pawn) ... ok
+test_ep_set_when_it_resolves_check_by_capturing_checker (test_perft_8x8.Test8x8RulesDetails.test_ep_set_when_it_resolves_check_by_capturing_checker) ... ok
+test_ep_set_when_legal_capture_exists (test_perft_8x8.Test8x8RulesDetails.test_ep_set_when_legal_capture_exists) ... ok
+test_ep_set_when_only_one_of_two_pawns_is_pinned (test_perft_8x8.Test8x8RulesDetails.test_ep_set_when_only_one_of_two_pawns_is_pinned) ... ok
+test_ep_well_formedness_v1_2 (test_perft_8x8.Test8x8RulesDetails.test_ep_well_formedness_v1_2) ... ok
+test_trailing_fen_counters_accepted_and_stripped (test_perft_8x8.Test8x8RulesDetails.test_trailing_fen_counters_accepted_and_stripped) ... ok
+test_kiwipete_perft (test_perft_8x8.TestPerft8x8.test_kiwipete_perft) ... ok
+test_perft_matches_full_apply_recursion (test_perft_8x8.TestPerft8x8.test_perft_matches_full_apply_recursion) ... ok
+test_position3_perft (test_perft_8x8.TestPerft8x8.test_position3_perft) ... ok
+test_position4_perft (test_perft_8x8.TestPerft8x8.test_position4_perft) ... ok
+test_position5_perft (test_perft_8x8.TestPerft8x8.test_position5_perft) ... ok
+test_startpos_perft (test_perft_8x8.TestPerft8x8.test_startpos_perft) ... ok
+
+----------------------------------------------------------------------
+Ran 45 tests in 12.344s
+
+OK
+```
+
+### 4. Spec issues / open notes (Round 3)
+
+- None. SPEC v1.2 resolved the Round 2 open note regarding `ep` without a legal capture in `parse_position`.
