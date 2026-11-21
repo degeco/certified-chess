@@ -1,0 +1,9 @@
+3x3  OK   3000 positions
+3x4  OK   3000 positions
+4x4  OK   3000 positions
+4x5  OK   3000 positions
+5x5  OK   3000 positions
+5x6  OK   3000 positions
+6x6  OK   3000 positions
+8x8  OK   3000 positions
+exit=0

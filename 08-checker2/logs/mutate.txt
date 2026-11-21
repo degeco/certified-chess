@@ -1,0 +1,2 @@
+200 valid source certificates
+6197 mutants, 34 kinds: all_ranks_zero, bad_move_text, blank_body, blank_end, blank_header, change_move, comment, corrupt_entry, corrupt_root, drop_last_line, drop_line, dup_line, dup_line_other_move, empty, extra_field, header_variants, missing_field, no_final_newline, rank_bad_format, rank_down, rank_up, rank_zero, reorder, reverse, root_flip_stm, root_other_entry, root_successor, spaces_for_tabs, swap_kind, swap_ranks, swap_side, swap_two_moves, trailing_ws, truncate

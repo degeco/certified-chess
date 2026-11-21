@@ -1,0 +1,1 @@
+compared 2000 of 3500 certs under ../04-tablebase/results: agree=2000 (VALID=2000 INVALID=0) disagree=0

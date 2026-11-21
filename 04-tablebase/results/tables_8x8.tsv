@@ -1,0 +1,4 @@
+board	sig	index_size	legal	wins	draws	losses	checkmates	stalemates	max_win_dtm	max_loss_dtm	gen_sec	table_bytes	max_win_fen
+8x8	KQK	499968	368452	144508	23048	200896	364	872	19	20	1.2115	1499904	8/8/8/5k2/8/8/1Q6/K7 w - -
+8x8	KRK	500179	399323	175265	22250	201808	216	68	31	32	1.4095	1500537	7K/8/8/8/3k4/8/8/R7 w - -
+8x8	KPK	374976	331352	124960	108788	97604	0	22	55	56	0.6935	1124928	8/8/8/1k6/8/8/K5P1/8 w - -

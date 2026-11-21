@@ -1,0 +1,8 @@
+#cert v1
+#claim WIN w
+#root rqkr/pppp/PPPP/RQKR w - -
+rqkr/pppp/PPPP/RQKR w - -	a2b3	4
+r1kr/pqpp/1PPP/RQKR w - -	c2b3	3
+r2r/pkpp/1P1P/RQKR w - -	b2a3	2
+r1kr/P1pp/3P/RQKR w - -	b1a2	1
+rk1r/pPpp/1P1P/RQKR w - -	b2c3	1

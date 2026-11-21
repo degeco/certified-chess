@@ -1,0 +1,68 @@
+name: solve
+
+# Manual runs only. No schedule, no push trigger.
+on:
+  workflow_dispatch:
+    inputs:
+      position:
+        description: "Position string or named start (mini4x4, mini4x5, mini5x5)"
+        required: true
+        default: "mini4x4"
+      claim:
+        description: "WIN w | WIN b | ATLEAST_DRAW w | ATLEAST_DRAW b"
+        required: true
+        default: "WIN w"
+      max_seconds:
+        description: "Search time limit in seconds (job limit is 6 hours)"
+        required: true
+        default: "60"
+      max_nodes:
+        description: "Node limit"
+        required: true
+        default: "20000000"
+      tt_mb:
+        description: "Transposition table size in MB (runner has 8 GB private, 16 GB public)"
+        required: true
+        default: "512"
+
+permissions:
+  contents: read
+
+jobs:
+  solve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      POSITION: ${{ inputs.position }}
+      CLAIM: ${{ inputs.claim }}
+      MAX_SECONDS: ${{ inputs.max_seconds }}
+      MAX_NODES: ${{ inputs.max_nodes }}
+      TT_MB: ${{ inputs.tt_mb }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build engine and solver
+        run: |
+          nproc; free -g | head -2
+          make -C 02-engine -j4
+          make -C 05-solver -j4 msolve
+      - name: Search
+        run: |
+          mkdir -p out
+          set +e
+          ./05-solver/msolve "$POSITION" --claim "$CLAIM" --out out/result.cert \
+            --max-seconds "$MAX_SECONDS" --max-nodes "$MAX_NODES" --tt-mb "$TT_MB" --verbose \
+            2>&1 | tee out/search.log | tail -40
+          echo "msolve exit: ${PIPESTATUS[0]}" | tee -a out/search.log
+      - name: Check certificate with the trusted checker
+        run: |
+          if [ -f out/result.cert ]; then
+            wc -l out/result.cert
+            python3 03-checker/mcheck.py verify out/result.cert | tee out/check.log
+          else
+            echo "no certificate produced" | tee out/check.log
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result
+          path: out/
+          retention-days: 30

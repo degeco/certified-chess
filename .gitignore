@@ -1,0 +1,14 @@
+# build output
+build/
+bin/
+*.o
+*.a
+__pycache__/
+05-solver/msolve
+08-checker2/mcheck2
+# agent session logs
+agent*.log
+# large generated data (regenerate with the folder's Makefile)
+04-tablebase/data/
+04-tablebase/results/certs_*/
+.cache/

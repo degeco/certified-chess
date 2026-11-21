@@ -1,0 +1,1 @@
+compared 12 of 12 certs under ../05-solver/certs: agree=12 (VALID=12 INVALID=0) disagree=0

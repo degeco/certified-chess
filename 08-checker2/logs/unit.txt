@@ -1,0 +1,5 @@
+--- PASS: TestPerft8x8 (2.13s)
+--- PASS: TestValidity (0.00s)
+--- PASS: TestEPAndCastlingSuccessors (0.00s)
+PASS
+ok  	mcheck2	2.137s
